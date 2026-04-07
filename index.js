@@ -260,4 +260,4 @@ bot.on('callback_query', async (query) => {
 
 const app = express();
 app.get('/', (req, res) => res.send('Бот запущен и работает!'));
-app.listen(process.env.PORT || 8000, () => console.log('Облачный сервер запущен на 8000'));
+app.listen(process.env.PORT || 7860, () => console.log('Облачный сервер запущен на 7860'));
