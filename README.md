@@ -1,3 +1,12 @@
+---
+title: Pollinations Bot
+emoji: 🎨
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 7860
+---
+
 # Pollinations AI Telegram Bot
 
 Бот для Telegram, который интегрируется с ИИ Pollinations.ai для улучшения промптов и бесплатной генерации изображений.
