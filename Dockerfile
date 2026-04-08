@@ -8,6 +8,15 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # Устанавливаем зависимости
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    iputils-ping \
+    dnsutils \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN npm install --production
 
 # Копируем остальной код

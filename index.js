@@ -38,8 +38,12 @@ async function initializeBot() {
   // 2. Проверка общего интернета (IP и Hostname)
   try {
     const ipCheck = await axios.get('https://1.1.1.1', { timeout: 5000 }).catch(() => null);
+    const tgIpCheck = await axios.get('https://149.154.167.220', { timeout: 5000, validateStatus: false }).catch((e) => e);
+    
     if (ipCheck) {
         networkStatus = "✅ Прямой IP доступ есть (1.1.1.1 OK)";
+    } else if (tgIpCheck && (tgIpCheck.status || tgIpCheck.code === 'ECONNREFUSED')) {
+        networkStatus = "✅ Канал до Telegram IP (149.154.167.220) открыт!";
     } else {
         await axios.get('https://www.google.com', { timeout: 5000 });
         networkStatus = "✅ Интернет через DNS доступен";
