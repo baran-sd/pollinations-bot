@@ -194,6 +194,12 @@ async function initializeBot() {
 initializeBot();
 
 
+// Escape Markdown special characters to prevent Telegram parse errors
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+}
+
 // State Management
 const userSettings = new Map(); // chatId -> { aspectRatio: '...', systemPrompt: '...', state: '...' }
 const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, modelId }
@@ -263,8 +269,8 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     // 5. Обновляем статус
     await bot.editMessageText(
       isVideo
-        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n_${enhancedPrompt}_`
-        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n_${enhancedPrompt}_`,
+        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n_${escapeMarkdown(enhancedPrompt)}_`
+        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n_${escapeMarkdown(enhancedPrompt)}_`,
       { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
     ).catch(() => {});
 
@@ -326,7 +332,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     };
 
     // 10. Отправляем результат
-    const caption = `✨ **Промпт:** _${enhancedPrompt}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
+    const caption = `✨ **Промпт:** _${escapeMarkdown(enhancedPrompt)}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
     let truncatedCaption = caption;
     if (truncatedCaption.length > 1000) {
       truncatedCaption = truncatedCaption.substring(0, 997) + '...';
@@ -376,7 +382,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       errorMessage = '❌ Не удалось подключиться к Pollinations API. Проблемы с сетью.';
     }
 
-    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${error.message}`);
+    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${escapeMarkdown(error.message)}`);
   }
 }
 
