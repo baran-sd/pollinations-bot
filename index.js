@@ -2,6 +2,15 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const express = require('express');
+const dns = require('dns');
+
+// Принудительно устанавливаем Google DNS для обхода проблем в Private Space
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4']);
+  console.log("Установлены сторонние DNS (8.8.8.8)");
+} catch (e) {
+  console.error("Не удалось сменить DNS сервера:", e.message);
+}
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const pollinationsKey = process.env.POLLINATIONS_API_KEY;
@@ -26,12 +35,17 @@ async function initializeBot() {
   networkStatus = "Стабилизация сети (5 сек)...";
   await new Promise(r => setTimeout(r, 5000));
 
-  // 2. Проверка общего интернета
+  // 2. Проверка общего интернета (IP и Hostname)
   try {
-    await axios.get('https://www.google.com', { timeout: 5000 });
-    networkStatus = "✅ Интернет доступен (HTTP OK)";
+    const ipCheck = await axios.get('https://1.1.1.1', { timeout: 5000 }).catch(() => null);
+    if (ipCheck) {
+        networkStatus = "✅ Прямой IP доступ есть (1.1.1.1 OK)";
+    } else {
+        await axios.get('https://www.google.com', { timeout: 5000 });
+        networkStatus = "✅ Интернет через DNS доступен";
+    }
   } catch (e) {
-    networkStatus = `⚠️ Ограниченная связь: ${e.message}`;
+    networkStatus = `⚠️ Сеть недоступна: ${e.message}`;
     console.warn(networkStatus);
   }
 
