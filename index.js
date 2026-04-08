@@ -2,7 +2,53 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const dns = require('dns');
+
+const PROMPTS_FILE = path.join(__dirname, 'prompts.json');
+
+// Default prompts if none exist
+const DEFAULT_PROMPTS = [
+  { 
+    id: 'default', 
+    name: '🌟 Standard', 
+    text: 'Rewrite the following user request into a highly creative prompt for an AI image generator. Add artistic styles, lighting, and camera angles. Keep it concise, MAXIMUM 30 words! Make it in English language only. Output ONLY the raw prompt, no extra text, explanations, or quotes. The user request is: ' 
+  },
+  { 
+    id: 'anime', 
+    name: '⛩ Anime Style', 
+    text: 'Convert the user request into a detailed anime-style prompt. Mention specific anime aesthetics like Makoto Shinkai lighting or Studio Ghibli vibes. High quality, 4k, vibrant colors. Output ONLY the improved English prompt: ' 
+  },
+  { 
+    id: 'photo', 
+    name: '📸 Photorealistic', 
+    text: 'Transform the user request into a ultra-realistic photographic prompt. Specify camera (Sony A7R IV), lens (85mm f/1.4), lighting (golden hour), and texture details. Output ONLY the improved English prompt: ' 
+  }
+];
+
+function loadSavedPrompts() {
+  try {
+    if (fs.existsSync(PROMPTS_FILE)) {
+      const data = fs.readFileSync(PROMPTS_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Error loading prompts:', err);
+  }
+  return { global: DEFAULT_PROMPTS };
+}
+
+function saveSavedPrompts(prompts) {
+  try {
+    fs.writeFileSync(PROMPTS_FILE, JSON.stringify(prompts, null, 2));
+  } catch (err) {
+    console.error('Error saving prompts:', err);
+  }
+}
+
+let savedPrompts = loadSavedPrompts();
+
 
 // БЛОК ОБХОДА DNS БЛОКИРОВКИ ДЛЯ API.TELEGRAM.ORG
 const originalLookup = dns.lookup;
@@ -150,7 +196,11 @@ const userSettings = new Map(); // chatId -> { aspectRatio: '...', systemPrompt:
 const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, modelId }
 
 function getSettings(chatId) {
-  return userSettings.get(chatId) || { aspectRatio: '1024x1024' };
+  const settings = userSettings.get(chatId) || { 
+    aspectRatio: '1024x1024',
+    activePromptId: 'default'
+  };
+  return settings;
 }
 
 // ===== CORE: Функция генерации медиа через Pollinations API =====
@@ -173,7 +223,10 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     let enhancedPrompt = preEnhancedPrompt;
     if (!enhancedPrompt) {
       try {
-        const sysPrompt = settings.systemPrompt || systemEnhancePrompt;
+        const userPrompts = savedPrompts[chatId] || savedPrompts.global;
+        const activePromptObj = userPrompts.find(p => p.id === settings.activePromptId) || userPrompts[0];
+        const sysPrompt = activePromptObj ? activePromptObj.text : systemEnhancePrompt;
+        
         const enhanceResponse = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
           model: 'openai',
           messages: [
@@ -345,18 +398,36 @@ function setupBotHandlers() {
 3️⃣ Делать **видео** из текста или картинок
 
 🛠 Настройки: /settings
-✏️ Изменить ИИ-промпт: /prompt`;
+📋 Список промптов: /prompts`;
     bot.sendMessage(chatId, welcomeMessage);
   });
 
-  bot.onText(/\/prompt/, (msg) => {
+  bot.onText(/\/prompts/, (msg) => {
     const chatId = msg.chat.id;
     const settings = getSettings(chatId);
-    settings.state = 'waiting_for_prompt';
-    userSettings.set(chatId, settings);
+    const userPrompts = savedPrompts[chatId] || savedPrompts.global;
     
-    const current = settings.systemPrompt || systemEnhancePrompt;
-    bot.sendMessage(chatId, `Текущий системный промпт:\n_\`\`\`\n${current}\n\`\`\`_\n\nОтправьте мне новый системный промпт для ваших улучшений (например: "Переведи запрос на английский, добавь стиль аниме и яркие краски").\nИли напишите /cancel для отмены.`, { parse_mode: 'Markdown' });
+    let keyboard = [];
+    userPrompts.forEach(p => {
+      const isSelected = p.id === settings.activePromptId;
+      keyboard.push([{ 
+        text: `${isSelected ? '✅ ' : ''}${p.name}`, 
+        callback_data: `p_select_${p.id}` 
+      }, {
+        text: '🗑',
+        callback_data: `p_del_${p.id}`
+      }]);
+    });
+    keyboard.push([{ text: '➕ Добавить новый', callback_data: 'p_add' }]);
+
+    bot.sendMessage(chatId, '🗂 **Ваши системные промпты**\nВыберите активный промпт или создайте новый:', { 
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  });
+
+  bot.onText(/\/prompt/, (msg) => {
+    bot.sendMessage(msg.chat.id, "Команда /prompt теперь заменена на /prompts для управления списком промптов.");
   });
 
   bot.onText(/\/cancel/, (msg) => {
@@ -364,6 +435,7 @@ function setupBotHandlers() {
     const settings = getSettings(chatId);
     if (settings.state) {
       settings.state = null;
+      settings.tempNewPromptName = null;
       userSettings.set(chatId, settings);
       bot.sendMessage(chatId, 'Действие отменено.');
     }
@@ -389,13 +461,34 @@ function setupBotHandlers() {
         console.log(`📩 Новое сообщение от @${msg.from.username || 'unknown'} [${chatId}]: "${userInput}"`);
     }
 
-    // Handle waiting for prompt state
+    // Обработка Мастера создания промптов
     const settings = getSettings(chatId);
-    if (settings.state === 'waiting_for_prompt' && userInput && !userInput.startsWith('/')) {
-      settings.systemPrompt = userInput;
-      settings.state = null;
+    if (settings.state === 'waiting_for_new_prompt_name' && userInput && !userInput.startsWith('/')) {
+      settings.tempNewPromptName = userInput;
+      settings.state = 'waiting_for_new_prompt_text';
       userSettings.set(chatId, settings);
-      return bot.sendMessage(chatId, '✅ Персональный системный промпт обновлен! Теперь генерируйте картинки как обычно.');
+      return bot.sendMessage(chatId, `Принято: **${userInput}**\n\nТеперь отправьте сам текст системного промпта:`, { parse_mode: 'Markdown' });
+    }
+
+    if (settings.state === 'waiting_for_new_prompt_text' && userInput && !userInput.startsWith('/')) {
+      const newPrompt = {
+        id: 'p_' + Date.now(),
+        name: settings.tempNewPromptName,
+        text: userInput
+      };
+      
+      if (!savedPrompts[chatId]) {
+        savedPrompts[chatId] = [...(savedPrompts.global || DEFAULT_PROMPTS)];
+      }
+      savedPrompts[chatId].push(newPrompt);
+      saveSavedPrompts(savedPrompts);
+
+      settings.state = null;
+      settings.tempNewPromptName = null;
+      settings.activePromptId = newPrompt.id;
+      userSettings.set(chatId, settings);
+      
+      return bot.sendMessage(chatId, `✅ Промпт **${newPrompt.name}** сохранен и выбран как активный!`, { parse_mode: 'Markdown' });
     }
 
     // Если прислали фото
@@ -436,10 +529,87 @@ function setupBotHandlers() {
     const chatId = query.message.chat.id;
     const data = query.data; 
   
+    if (data.startsWith('p_select_')) {
+      const promptId = data.replace('p_select_', '');
+      const settings = getSettings(chatId);
+      settings.activePromptId = promptId;
+      userSettings.set(chatId, settings);
+      
+      const userPrompts = savedPrompts[chatId] || savedPrompts.global;
+      const prompt = userPrompts.find(p => p.id === promptId);
+      
+      bot.answerCallbackQuery(query.id, { text: `Активен: ${prompt ? prompt.name : promptId}` });
+      
+      // Обновляем список, чтобы показать галочку
+      let keyboard = [];
+      userPrompts.forEach(p => {
+        const isSelected = p.id === settings.activePromptId;
+        keyboard.push([{ 
+          text: `${isSelected ? '✅ ' : ''}${p.name}`, 
+          callback_data: `p_select_${p.id}` 
+        }, {
+          text: '🗑',
+          callback_data: `p_del_${p.id}`
+        }]);
+      });
+      keyboard.push([{ text: '➕ Добавить новый', callback_data: 'p_add' }]);
+      
+      bot.editMessageReplyMarkup({ inline_keyboard: keyboard }, { chat_id: chatId, message_id: query.message.message_id });
+      return;
+    }
+
+    if (data.startsWith('p_del_')) {
+      const promptId = data.replace('p_del_', '');
+      if (promptId === 'default') return bot.answerCallbackQuery(query.id, { text: 'Нельзя удалить стандартный промпт', show_alert: true });
+      
+      if (!savedPrompts[chatId]) {
+        savedPrompts[chatId] = [...(savedPrompts.global || DEFAULT_PROMPTS)];
+      }
+      
+      savedPrompts[chatId] = savedPrompts[chatId].filter(p => p.id !== promptId);
+      saveSavedPrompts(savedPrompts);
+      
+      const settings = getSettings(chatId);
+      if (settings.activePromptId === promptId) settings.activePromptId = 'default';
+      userSettings.set(chatId, settings);
+      
+      bot.answerCallbackQuery(query.id, { text: 'Удалено' });
+      
+      // Обновляем список
+      const userPrompts = savedPrompts[chatId];
+      let keyboard = [];
+      userPrompts.forEach(p => {
+        const isSelected = p.id === settings.activePromptId;
+        keyboard.push([{ 
+          text: `${isSelected ? '✅ ' : ''}${p.name}`, 
+          callback_data: `p_select_${p.id}` 
+        }, {
+          text: '🗑',
+          callback_data: `p_del_${p.id}`
+        }]);
+      });
+      keyboard.push([{ text: '➕ Добавить новый', callback_data: 'p_add' }]);
+      
+      bot.editMessageReplyMarkup({ inline_keyboard: keyboard }, { chat_id: chatId, message_id: query.message.message_id });
+      return;
+    }
+
+    if (data === 'p_add') {
+      const settings = getSettings(chatId);
+      settings.state = 'waiting_for_new_prompt_name';
+      userSettings.set(chatId, settings);
+      bot.sendMessage(chatId, '📝 Введите название для вашего нового системного промпта:');
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // --- Original Handlers ---
     if (data.startsWith('ar_')) {
       const ar = data.split('_')[1];
       console.log(`⚙️ Смена формата (ChatID: ${chatId}) на: ${ar}`);
-      userSettings.set(chatId, { aspectRatio: ar });
+      const settings = getSettings(chatId);
+      settings.aspectRatio = ar;
+      userSettings.set(chatId, settings);
       bot.editMessageText(`✅ Формат изменен на ${ar}\nВсе новые картинки будут создаваться в этом размере.`, { chat_id: chatId, message_id: query.message.message_id });
       bot.answerCallbackQuery(query.id);
       return;
