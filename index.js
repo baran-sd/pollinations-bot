@@ -15,6 +15,9 @@ if (!token || !token.includes(':')) {
 process.env.NTBA_FIX_350 = 1;
 const bot = new TelegramBot(token, { polling: true });
 
+console.log("--- БОТ ЗАПУСКАЕТСЯ ---");
+console.log("Интервал поллинга: активен");
+
 // State Management
 const userSettings = new Map(); // chatId -> { aspectRatio: '...', systemPrompt: '...', state: '...' }
 const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, modelId }
@@ -22,6 +25,17 @@ const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, mo
 function getSettings(chatId) {
   return userSettings.get(chatId) || { aspectRatio: '1024x1024' };
 }
+
+bot.onText(/\/status/, (msg) => {
+  const chatId = msg.chat.id;
+  const uptime = Math.floor(process.uptime());
+  const statusInfo = `🚀 **Статус бота:**
+✅ Работает (online)
+🕒 Аптайм: ${uptime} сек.
+📡 Сборка: ${process.env.NODE_ENV || 'development'}
+📍 Инстанс: ${process.env.HOSTNAME || 'Local/HF-Space'}`;
+  bot.sendMessage(chatId, statusInfo, { parse_mode: 'Markdown' });
+});
 
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
@@ -144,8 +158,15 @@ async function generateMedia(chatId, queryId, originalPrompt, providedEnhanced =
     await bot.deleteMessage(chatId, statusMsg.message_id);
 
   } catch (error) {
-    console.error("Ошибка:", error.response ? JSON.stringify(error.response.data) : error.message);
-    bot.sendMessage(chatId, '❌ Ошибка генерации. Возможно, сервера перегружены.');
+    const errorDetail = error.response ? JSON.stringify(error.response.data) : error.message;
+    console.error(`❌ ОШИБКА ГЕНЕРАЦИИ (ChatID: ${chatId}):`, errorDetail);
+    
+    let userFriendlyError = '❌ Ошибка генерации. Возможно, сервера перегружены.';
+    if (errorDetail.includes('invalid_api_key')) {
+        userFriendlyError = '❌ Ошибка: Неверный API-ключ Pollinations.';
+    }
+    
+    bot.sendMessage(chatId, userFriendlyError);
     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>null);
   } finally {
     if (queryId) bot.answerCallbackQuery(queryId);
@@ -177,6 +198,10 @@ async function saveHistoryAndSendPhoto(chatId, originalPrompt, enhancedPrompt, m
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const userInput = msg.text;
+  
+  if (userInput) {
+      console.log(`📩 Новое сообщение от @${msg.from.username || 'unknown'} [${chatId}]: "${userInput}"`);
+  }
 
   // Handle waiting for prompt state
   const settings = getSettings(chatId);
@@ -227,6 +252,7 @@ bot.on('callback_query', async (query) => {
 
   if (data.startsWith('ar_')) {
     const ar = data.split('_')[1];
+    console.log(`⚙️ Смена формата (ChatID: ${chatId}) на: ${ar}`);
     userSettings.set(chatId, { aspectRatio: ar });
     bot.editMessageText(`✅ Формат изменен на ${ar}\nВсе новые картинки будут создаваться в этом размере.`, { chat_id: chatId, message_id: query.message.message_id });
     bot.answerCallbackQuery(query.id);
