@@ -19,7 +19,13 @@ const systemEnhancePrompt = process.env.SYSTEM_ENHANCE_PROMPT || `Rewrite the fo
 let botError = null;
 let bot = null;
 let botUserName = 'Unknown';
-let networkStatus = 'Ожидание запуска...';
+let networkStatus = 'Инициализация...';
+let networkChecks = {
+  dns: 'Ожидание...',
+  ip_1_1_1_1: 'Ожидание...',
+  tg_ip: 'Ожидание...',
+  google: 'Ожидание...'
+};
 let connectionHistory = [];
 
 async function initializeBot() {
@@ -32,25 +38,49 @@ async function initializeBot() {
   process.env.NTBA_FIX_350 = 1;
   
   // 1. Ждем немного для стабилизации сети в Docker
-  networkStatus = "Стабилизация сети (5 сек)...";
-  await new Promise(r => setTimeout(r, 5000));
+  networkStatus = "Стабилизация сети (2 сек)...";
+  await new Promise(r => setTimeout(r, 2000));
 
-  // 2. Проверка общего интернета (IP и Hostname)
+  // 2. Проверка 1: DNS Google (8.8.8.8)
   try {
-    const ipCheck = await axios.get('https://1.1.1.1', { timeout: 5000 }).catch(() => null);
-    const tgIpCheck = await axios.get('https://149.154.167.220', { timeout: 5000, validateStatus: false }).catch((e) => e);
-    
-    if (ipCheck) {
-        networkStatus = "✅ Прямой IP доступ есть (1.1.1.1 OK)";
-    } else if (tgIpCheck && (tgIpCheck.status || tgIpCheck.code === 'ECONNREFUSED')) {
-        networkStatus = "✅ Канал до Telegram IP (149.154.167.220) открыт!";
-    } else {
-        await axios.get('https://www.google.com', { timeout: 5000 });
-        networkStatus = "✅ Интернет через DNS доступен";
-    }
+    networkChecks.dns = "Проверка...";
+    await axios.get('https://8.8.8.8', { timeout: 3000, validateStatus: false });
+    networkChecks.dns = "✅ Доступно";
   } catch (e) {
-    networkStatus = `⚠️ Сеть недоступна: ${e.message}`;
-    console.warn(networkStatus);
+    networkChecks.dns = `❌ ${e.message}`;
+  }
+
+  // 3. Проверка 2: Прямой IP (1.1.1.1)
+  try {
+    networkChecks.ip_1_1_1_1 = "Проверка...";
+    await axios.get('https://1.1.1.1', { timeout: 3000, validateStatus: false });
+    networkChecks.ip_1_1_1_1 = "✅ Доступно";
+  } catch (e) {
+    networkChecks.ip_1_1_1_1 = `❌ ${e.message}`;
+  }
+
+  // 4. Проверка 3: Telegram IP (149.154.167.220)
+  try {
+    networkChecks.tg_ip = "Проверка...";
+    await axios.get('https://149.154.167.220', { timeout: 3000, validateStatus: false });
+    networkChecks.tg_ip = "✅ Доступно (SSL Error expected but route OK)";
+  } catch (e) {
+    if (e.code === 'ECONNREFUSED' || e.code === 'ETIMEDOUT') {
+        networkChecks.tg_ip = `❌ ${e.message}`;
+    } else {
+        networkChecks.tg_ip = `✅ Доступно (${e.code || 'TLS/SSL Error - Route OK'})`;
+    }
+  }
+
+  // 5. Проверка 4: Google.com (DNS Check)
+  try {
+    networkChecks.google = "Проверка...";
+    await axios.get('https://www.google.com', { timeout: 3000 });
+    networkChecks.google = "✅ Доступно (DNS работает)";
+    networkStatus = "Сеть: Доступна (DNS OK)";
+  } catch (e) {
+    networkChecks.google = `❌ ${e.message}`;
+    networkStatus = "Сеть: Проблемы с DNS или блокировка";
   }
 
   let attempts = 0;
@@ -267,6 +297,16 @@ app.get('/', (req, res) => {
     ? `<h3>История попыток:</h3><ul>${connectionHistory.map(line => `<li>${line}</li>`).join('')}</ul>` 
     : '';
 
+  const diagHtml = `
+    <div style="background: #eee; padding: 10px; margin: 10px 0; font-family: monospace; font-size: 0.9em; text-align: left;">
+        <b>Диагностика (Обновите страницу через 15 сек):</b><br>
+        - DNS Google (8.8.8.8): ${networkChecks.dns}<br>
+        - IP Cloudflare (1.1.1.1): ${networkChecks.ip_1_1_1_1}<br>
+        - IP Telegram (149.154.167.220): ${networkChecks.tg_ip}<br>
+        - Host Google.com (DNS Test): ${networkChecks.google}
+    </div>
+  `;
+
   if (botError) {
     res.status(500).send(`
       <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto;">
@@ -275,6 +315,7 @@ app.get('/', (req, res) => {
             <strong>Статус сети:</strong> ${networkStatus}<br>
             <strong>Текущая ошибка:</strong> ${botError}
         </div>
+        ${diagHtml}
         ${historyHtml}
         <hr>
         <h3>🛠 Что делать?</h3>
@@ -292,6 +333,7 @@ app.get('/', (req, res) => {
         <h1 style="color: #27ae60;">✅ Бот "@${botUserName}" запущен!</h1>
         <div style="background: #f1f8f4; padding: 20px; border-radius: 10px; border: 1px solid #d4edda; margin: 20px 0;">
             <p style="font-size: 1.2em; color: #155724;"><strong>Параметры сети:</strong> ${networkStatus}</p>
+            ${diagHtml}
             <p>Статус: <b>Online</b> | Uptime: ${Math.floor(process.uptime())} сек.</p>
         </div>
         <a href="https://t.me/${botUserName}" target="_blank" style="display: inline-block; background: #0088cc; color: white; padding: 10px 25px; border-radius: 50px; text-decoration: none; font-weight: bold;">➡️ Открыть в Telegram</a>
