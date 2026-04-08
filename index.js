@@ -266,13 +266,19 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     // 4. Сохраняем историю
     userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId });
 
-    // 5. Обновляем статус
+    // 5. Обновляем статус (обрезаем до безопасной длины)
+    const statusPrompt = escapeHtml(enhancedPrompt.length > 500 ? enhancedPrompt.substring(0, 500) + '...' : enhancedPrompt);
+    const statusType = isVideo ? '🎬 Генерирую видео...' : '🎨 Генерирую изображение...';
     await bot.editMessageText(
-      isVideo
-        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n<i>${escapeHtml(enhancedPrompt)}</i>`
-        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n<i>${escapeHtml(enhancedPrompt)}</i>`,
+      `${statusType}\n\n📝 Улучшенный промпт:\n<i>${statusPrompt}</i>`,
       { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'HTML' }
-    ).catch(() => {});
+    ).catch(() => {
+      // Fallback без форматирования
+      bot.editMessageText(
+        `${statusType}\n\n📝 Улучшенный промпт:\n${enhancedPrompt.substring(0, 500)}`,
+        { chat_id: chatId, message_id: statusMsg.message_id }
+      ).catch(() => {});
+    });
 
     // 6. Формируем URL для генерации
     const encodedPrompt = encodeURIComponent(enhancedPrompt);
@@ -331,31 +337,53 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       ]
     };
 
-    // 10. Отправляем результат
-    const caption = `✨ <b>Промпт:</b> <i>${escapeHtml(enhancedPrompt)}</i>\n🎨 <b>Модель:</b> ${modelId}\n📐 <b>Размер:</b> ${settings.aspectRatio || '1024x1024'}`;
-    let truncatedCaption = caption;
-    if (truncatedCaption.length > 1000) {
-      truncatedCaption = truncatedCaption.substring(0, 997) + '...';
+    // 10. Отправляем результат — обрезаем промпт ДО обёртки в HTML теги
+    const maxPromptLen = 800;
+    let displayPrompt = escapeHtml(enhancedPrompt);
+    if (displayPrompt.length > maxPromptLen) {
+      displayPrompt = displayPrompt.substring(0, maxPromptLen) + '...';
     }
+    const caption = `✨ <b>Промпт:</b> <i>${displayPrompt}</i>\n🎨 <b>Модель:</b> ${modelId}\n📐 <b>Размер:</b> ${settings.aspectRatio || '1024x1024'}`;
+    
+    // Fallback-подход: если HTML не проходит — отправляем без форматирования
+    const plainCaption = `✨ Промпт: ${enhancedPrompt.substring(0, maxPromptLen)}${enhancedPrompt.length > maxPromptLen ? '...' : ''}\n🎨 Модель: ${modelId}\n📐 Размер: ${settings.aspectRatio || '1024x1024'}`;
 
-    if (isVideo || contentType.includes('video')) {
-      await bot.sendVideo(chatId, buffer, {
-        caption: truncatedCaption,
-        parse_mode: 'HTML',
-        reply_markup: JSON.stringify(actionKeyboard)
-      }, {
-        filename: 'video.mp4',
-        contentType: 'video/mp4'
-      });
-    } else {
-      await bot.sendPhoto(chatId, buffer, {
-        caption: truncatedCaption,
-        parse_mode: 'HTML',
-        reply_markup: JSON.stringify(actionKeyboard)
-      }, {
-        filename: 'image.jpg',
-        contentType: contentType || 'image/jpeg'
-      });
+    const sendOptions = { parse_mode: 'HTML', reply_markup: JSON.stringify(actionKeyboard) };
+    const sendOptionsFallback = { reply_markup: JSON.stringify(actionKeyboard) };
+
+    try {
+      if (isVideo || contentType.includes('video')) {
+        await bot.sendVideo(chatId, buffer, {
+          caption, ...sendOptions
+        }, {
+          filename: 'video.mp4',
+          contentType: 'video/mp4'
+        });
+      } else {
+        await bot.sendPhoto(chatId, buffer, {
+          caption, ...sendOptions
+        }, {
+          filename: 'image.jpg',
+          contentType: contentType || 'image/jpeg'
+        });
+      }
+    } catch (sendErr) {
+      console.warn('⚠️ Ошибка отправки с HTML, пробуем без форматирования:', sendErr.message);
+      if (isVideo || contentType.includes('video')) {
+        await bot.sendVideo(chatId, buffer, {
+          caption: plainCaption, ...sendOptionsFallback
+        }, {
+          filename: 'video.mp4',
+          contentType: 'video/mp4'
+        });
+      } else {
+        await bot.sendPhoto(chatId, buffer, {
+          caption: plainCaption, ...sendOptionsFallback
+        }, {
+          filename: 'image.jpg',
+          contentType: contentType || 'image/jpeg'
+        });
+      }
     }
 
     console.log(`📨 Результат отправлен в чат ${chatId}`);
