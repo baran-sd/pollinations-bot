@@ -228,7 +228,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
         const sysPrompt = activePromptObj ? activePromptObj.text : systemEnhancePrompt;
         
         const enhanceResponse = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
-          model: 'openai',
+          model: 'openai-fast',
           messages: [
             { role: 'system', content: sysPrompt },
             { role: 'user', content: originalPrompt }
@@ -240,7 +240,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
             'Authorization': `Bearer ${pollinationsKey}`,
             'Content-Type': 'application/json'
           },
-          timeout: 30000
+          timeout: 60000
         });
 
         enhancedPrompt = enhanceResponse.data?.choices?.[0]?.message?.content?.trim();
@@ -322,12 +322,15 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       ]
     };
 
-    const caption = `✨ **Промпт:** _${enhancedPrompt}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
-
     // 10. Отправляем результат
+    let truncatedCaption = caption;
+    if (truncatedCaption.length > 1000) {
+      truncatedCaption = truncatedCaption.substring(0, 997) + '...';
+    }
+
     if (isVideo || contentType.includes('video')) {
       await bot.sendVideo(chatId, buffer, {
-        caption: caption,
+        caption: truncatedCaption,
         parse_mode: 'Markdown',
         reply_markup: JSON.stringify(actionKeyboard)
       }, {
@@ -336,7 +339,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       });
     } else {
       await bot.sendPhoto(chatId, buffer, {
-        caption: caption,
+        caption: truncatedCaption,
         parse_mode: 'Markdown',
         reply_markup: JSON.stringify(actionKeyboard)
       }, {
@@ -456,21 +459,19 @@ function setupBotHandlers() {
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userInput = msg.text;
-    
-    if (userInput) {
-        console.log(`📩 Новое сообщение от @${msg.from.username || 'unknown'} [${chatId}]: "${userInput}"`);
-    }
-
-    // Обработка Мастера создания промптов
     const settings = getSettings(chatId);
+    
+    // БЛОК 1: Обработка Мастера создания промптов (ВЫСШИЙ ПРИОРИТЕТ)
     if (settings.state === 'waiting_for_new_prompt_name' && userInput && !userInput.startsWith('/')) {
+      console.log(`[Wizard] Получено название: "${userInput}" для чата ${chatId}`);
       settings.tempNewPromptName = userInput;
       settings.state = 'waiting_for_new_prompt_text';
       userSettings.set(chatId, settings);
-      return bot.sendMessage(chatId, `Принято: **${userInput}**\n\nТеперь отправьте сам текст системного промпта:`, { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, `Принято название: **${userInput}**\n\nТеперь отправьте сам текст системного промпта (инструкции для ИИ):`, { parse_mode: 'Markdown' });
     }
 
     if (settings.state === 'waiting_for_new_prompt_text' && userInput && !userInput.startsWith('/')) {
+      console.log(`[Wizard] Получен текст промпта для "${settings.tempNewPromptName}"`);
       const newPrompt = {
         id: 'p_' + Date.now(),
         name: settings.tempNewPromptName,
@@ -488,40 +489,44 @@ function setupBotHandlers() {
       settings.activePromptId = newPrompt.id;
       userSettings.set(chatId, settings);
       
-      return bot.sendMessage(chatId, `✅ Промпт **${newPrompt.name}** сохранен и выбран как активный!`, { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, `✅ Промпт **${newPrompt.name}** успешно сохранен и выбран как основной!`, { parse_mode: 'Markdown' });
     }
 
-    // Если прислали фото
+    // Если это команда — пропускаем (они обрабатываются в других местах)
+    if (userInput && userInput.startsWith('/')) return;
+
+    if (userInput) {
+        console.log(`📩 Сообщение от @${msg.from.username || 'unknown'} [${chatId}]: "${userInput}"`);
+    }
+
+    // Обработка Фото
     if (msg.photo) {
-      const caption = msg.caption || 'Make it look better and more high quality';
-      const photoId = msg.photo[msg.photo.length - 1].file_id; // берем лучшее качество
+      const captionText = msg.caption || 'Make it look better and more high quality';
+      const photoId = msg.photo[msg.photo.length - 1].file_id;
       try {
         const fileLink = await bot.getFileLink(photoId); 
-        // Запускаем переработку фото
-        await generateMedia(chatId, null, caption, null, 'klein', fileLink); 
+        await generateMedia(chatId, null, captionText, null, 'klein', fileLink); 
       } catch (err) {
-        bot.sendMessage(chatId, "❌ Ошибка получения картинки от Telegram.");
+        bot.sendMessage(chatId, "❌ Ошибка получения картинки.");
       }
       return;
     }
 
-    if (!userInput || userInput.startsWith('/')) return;
+    if (!userInput) return;
 
-    // Обычный текст: спрашиваем модель
-    userHistory.set(chatId, { originalPrompt: userInput }); // Временно храним ввод
-
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: '🌟 Z-Image Turbo', callback_data: 'model_zimage' },
-          { text: '⚡ Flux Schnell', callback_data: 'model_flux' },
-          { text: '💎 Flux Klein', callback_data: 'model_klein' }
-        ]
-      ]
+    // ОБЫЧНАЯ ГЕНЕРАЦИЯ
+    userHistory.set(chatId, { originalPrompt: userInput });
+    
+    const modelKeyboard = {
+      inline_keyboard: [[
+        { text: '🌟 Z-Image Turbo', callback_data: 'model_zimage' },
+        { text: '⚡ Flux Schnell', callback_data: 'model_flux' },
+        { text: '💎 Flux Klein', callback_data: 'model_klein' }
+      ]]
     };
 
     await bot.sendMessage(chatId, `Отличная идея:\n"${userInput}"\n\nВыберите модель:`, {
-      reply_markup: JSON.stringify(keyboard)
+      reply_markup: JSON.stringify(modelKeyboard)
     });
   });
 
