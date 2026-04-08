@@ -10,39 +10,78 @@ const systemEnhancePrompt = process.env.SYSTEM_ENHANCE_PROMPT || `Rewrite the fo
 let botError = null;
 let bot = null;
 let botUserName = 'Unknown';
+let networkStatus = 'Ожидание запуска...';
+let connectionHistory = [];
 
-if (!token || !token.includes(':')) {
-  botError = "Недействительный токен Telegram-бота. Проверьте переменную TELEGRAM_BOT_TOKEN.";
-  console.error("ОШИБКА: " + botError);
-} else {
+async function initializeBot() {
+  if (!token || !token.includes(':')) {
+    botError = "Недействительный токен Telegram-бота. Проверьте переменную TELEGRAM_BOT_TOKEN.";
+    console.error("ОШИБКА: " + botError);
+    return;
+  }
+
   process.env.NTBA_FIX_350 = 1;
+  
+  // 1. Ждем немного для стабилизации сети в Docker
+  networkStatus = "Стабилизация сети (5 сек)...";
+  await new Promise(r => setTimeout(r, 5000));
+
+  // 2. Проверка общего интернета
   try {
-    bot = new TelegramBot(token, { polling: true });
-    console.log("--- БОТ ЗАПУСКАЕТСЯ ---");
-    
-    bot.getMe().then(user => {
-        botUserName = user.username;
-        console.log(`✅ Бот @${botUserName} успешно авторизован.`);
-    }).catch(err => {
-        botError = `Ошибка Bot API: ${err.message}`;
-        console.error(botError);
-    });
-
-    bot.on('polling_error', (error) => {
-        // Не перезаписываем серьезную ошибку авторизации
-        if (!botError) {
-            console.error(`[Polling Error] ${error.code}: ${error.message}`);
-            if (error.message.includes('409 Conflict')) {
-                botError = "Конфликт поллинга: Бот запущен в другом месте (например, локально). Выключите локального бота!";
-            }
-        }
-    });
-
+    await axios.get('https://www.google.com', { timeout: 5000 });
+    networkStatus = "✅ Интернет доступен (HTTP OK)";
   } catch (e) {
-    botError = `Ошибка инициализации: ${e.message}`;
-    console.error(botError);
+    networkStatus = `⚠️ Ограниченная связь: ${e.message}`;
+    console.warn(networkStatus);
+  }
+
+  let attempts = 0;
+  const maxAttempts = 5;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    const timestamp = new Date().toLocaleTimeString();
+    try {
+      console.log(`[${timestamp}] Попытка подключения #${attempts}...`);
+      
+      // Инициализируем бота только один раз
+      if (!bot) {
+        bot = new TelegramBot(token, { polling: true });
+        // Вешаем слушатели ошибок один раз
+        bot.on('polling_error', (error) => {
+          console.error(`[Polling Error] ${error.code}: ${error.message}`);
+          if (error.message.includes('409 Conflict')) {
+            botError = "Конфликт: Бот запущен в другом месте. Выключите локального бота!";
+          }
+        });
+      }
+
+      const user = await bot.getMe();
+      botUserName = user.username;
+      botError = null;
+      console.log(`✅ Бот @${botUserName} успешно авторизован.`);
+      setupBotHandlers(); // Установка обработчиков сообщений
+      return; 
+
+    } catch (err) {
+      const errorMsg = `${err.code || 'ERROR'}: ${err.message}`;
+      connectionHistory.push(`[${timestamp}] Попытка ${attempts}: ${errorMsg}`);
+      console.error(`❌ Попытка ${attempts} не удалась: ${errorMsg}`);
+      botError = `Ошибка подключения: ${errorMsg}`;
+
+      if (attempts < maxAttempts && (err.message.includes('ENOTFOUND') || err.message.includes('EFATAL') || err.message.includes('ETIMEDOUT'))) {
+        const waitTime = 10000;
+        networkStatus = `🔄 Ошибка сети. Повтор через ${waitTime/1000}с...`;
+        await new Promise(r => setTimeout(r, waitTime));
+      } else {
+        break;
+      }
+    }
   }
 }
+
+initializeBot();
+
 
 // State Management
 const userSettings = new Map(); // chatId -> { aspectRatio: '...', systemPrompt: '...', state: '...' }
@@ -52,7 +91,10 @@ function getSettings(chatId) {
   return userSettings.get(chatId) || { aspectRatio: '1024x1024' };
 }
 
-if (bot) {
+function setupBotHandlers() {
+  if (setupBotHandlers.done) return;
+  setupBotHandlers.done = true;
+
   bot.onText(/\/status/, (msg) => {
     const chatId = msg.chat.id;
     const uptime = Math.floor(process.uptime());
@@ -200,42 +242,42 @@ if (bot) {
   });
 }
 
+
 const app = express();
 app.get('/', (req, res) => {
+  const historyHtml = connectionHistory.length > 0 
+    ? `<h3>История попыток:</h3><ul>${connectionHistory.map(line => `<li>${line}</li>`).join('')}</ul>` 
+    : '';
+
   if (botError) {
     res.status(500).send(`
       <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto;">
-        <h1 style="color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 10px;">❌ Ошибка конфигурации бота</h1>
-        <p style="font-size: 1.1em; background: #fdf2f2; color: #a94442; padding: 15px; border-radius: 5px; border-left: 5px solid #e74c3c;">
-            <strong>Текст ошибки:</strong> ${botError}
-        </p>
-        <h3>🛠 Инструкция по исправлению:</h3>
+        <h1 style="color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 10px;">❌ Проблема с запуском</h1>
+        <div style="background: #fdf2f2; border-left: 5px solid #e74c3c; padding: 15px; margin: 20px 0;">
+            <strong>Статус сети:</strong> ${networkStatus}<br>
+            <strong>Текущая ошибка:</strong> ${botError}
+        </div>
+        ${historyHtml}
+        <hr>
+        <h3>🛠 Что делать?</h3>
         <ol>
-            <li>Зайдите в настройки вашего <strong>Hugging Face Space</strong>.</li>
-            <li>Перейдите во вкладку <strong>Settings</strong>.</li>
-            <li>Найдите раздел <strong>Variables and secrets</strong>.</li>
-            <li>Убедитесь, что там добавлены:
-                <ul>
-                    <li><code>TELEGRAM_BOT_TOKEN</code> (ваш токен от @BotFather)</li>
-                    <li><code>POLLINATIONS_API_KEY</code> (ваш API-ключ, если есть)</li>
-                </ul>
-            </li>
-            <li>Если ошибка <b>"Conflict 409"</b> — выключите бота на своём компьютере, иначе он не будет работать в облаке.</li>
-            <li>После изменения секретов HF автоматически перезапустит билд.</li>
+            <li>Если ошибка <b>"ENOTFOUND"</b> или <b>"EFATAL"</b> в <b>Private Space</b> — это значит, что Space не может «увидеть» интернет. Попробуйте перезапустить Space (Restart) или проверьте, не включены ли в настройках HF ограничения Egress.</li>
+            <li>Убедитесь, что <code>TELEGRAM_BOT_TOKEN</code> в настройках верный.</li>
+            <li>Если ошибка <b>"Conflict 409"</b> — выключите бота на компьютере.</li>
         </ol>
-        <p style="color: #666; font-size: 0.9em; margin-top: 20px;">Instance ID: ${process.env.HOSTNAME || 'Local'}</p>
+        <p style="color: #666; font-size: 0.9em; margin-top: 20px;">Instance: ${process.env.HOSTNAME || 'Local'}</p>
       </div>
     `);
   } else {
     res.send(`
       <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto; text-align: center;">
-        <h1 style="color: #27ae60;">✅ Бот "@${botUserName}" работает!</h1>
+        <h1 style="color: #27ae60;">✅ Бот "@${botUserName}" запущен!</h1>
         <div style="background: #f1f8f4; padding: 20px; border-radius: 10px; border: 1px solid #d4edda; margin: 20px 0;">
-            <p style="font-size: 1.2em; color: #155724; font-weight: bold;">Бот активен и ожидает сообщений в Telegram.</p>
+            <p style="font-size: 1.2em; color: #155724;"><strong>Параметры сети:</strong> ${networkStatus}</p>
             <p>Статус: <b>Online</b> | Uptime: ${Math.floor(process.uptime())} сек.</p>
         </div>
         <a href="https://t.me/${botUserName}" target="_blank" style="display: inline-block; background: #0088cc; color: white; padding: 10px 25px; border-radius: 50px; text-decoration: none; font-weight: bold;">➡️ Открыть в Telegram</a>
-        <p style="color: #666; font-size: 0.9em; margin-top: 30px;">Hugging Face Space Deployment</p>
+        <p style="color: #666; font-size: 0.9em; margin-top: 30px;">Hugging Face Space Deployment (Private)</p>
       </div>
     `);
   }
