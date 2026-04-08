@@ -6,7 +6,10 @@ const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
 
-const PROMPTS_FILE = path.join(__dirname, 'prompts.json');
+// Use /data for HuggingFace persistent storage, fallback to local
+const HF_DATA_DIR = '/data';
+const PROMPTS_FILE = (fs.existsSync(HF_DATA_DIR) ? path.join(HF_DATA_DIR, 'prompts.json') : path.join(__dirname, 'prompts.json'));
+console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
 // Default prompts if none exist
 const DEFAULT_PROMPTS = [
@@ -323,6 +326,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     };
 
     // 10. Отправляем результат
+    const caption = `✨ **Промпт:** _${enhancedPrompt}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
     let truncatedCaption = caption;
     if (truncatedCaption.length > 1000) {
       truncatedCaption = truncatedCaption.substring(0, 997) + '...';
