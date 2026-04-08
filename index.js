@@ -194,10 +194,10 @@ async function initializeBot() {
 initializeBot();
 
 
-// Escape Markdown special characters to prevent Telegram parse errors
-function escapeMarkdown(text) {
+// Escape HTML special characters to prevent Telegram parse errors
+function escapeHtml(text) {
   if (!text) return '';
-  return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // State Management
@@ -269,9 +269,9 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     // 5. Обновляем статус
     await bot.editMessageText(
       isVideo
-        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n_${escapeMarkdown(enhancedPrompt)}_`
-        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n_${escapeMarkdown(enhancedPrompt)}_`,
-      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n<i>${escapeHtml(enhancedPrompt)}</i>`
+        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n<i>${escapeHtml(enhancedPrompt)}</i>`,
+      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'HTML' }
     ).catch(() => {});
 
     // 6. Формируем URL для генерации
@@ -332,7 +332,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     };
 
     // 10. Отправляем результат
-    const caption = `✨ **Промпт:** _${escapeMarkdown(enhancedPrompt)}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
+    const caption = `✨ <b>Промпт:</b> <i>${escapeHtml(enhancedPrompt)}</i>\n🎨 <b>Модель:</b> ${modelId}\n📐 <b>Размер:</b> ${settings.aspectRatio || '1024x1024'}`;
     let truncatedCaption = caption;
     if (truncatedCaption.length > 1000) {
       truncatedCaption = truncatedCaption.substring(0, 997) + '...';
@@ -341,7 +341,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     if (isVideo || contentType.includes('video')) {
       await bot.sendVideo(chatId, buffer, {
         caption: truncatedCaption,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: JSON.stringify(actionKeyboard)
       }, {
         filename: 'video.mp4',
@@ -350,7 +350,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     } else {
       await bot.sendPhoto(chatId, buffer, {
         caption: truncatedCaption,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: JSON.stringify(actionKeyboard)
       }, {
         filename: 'image.jpg',
@@ -382,7 +382,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       errorMessage = '❌ Не удалось подключиться к Pollinations API. Проблемы с сетью.';
     }
 
-    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${escapeMarkdown(error.message)}`);
+    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${escapeHtml(error.message)}`);
   }
 }
 
@@ -393,12 +393,12 @@ function setupBotHandlers() {
   bot.onText(/\/status/, (msg) => {
     const chatId = msg.chat.id;
     const uptime = Math.floor(process.uptime());
-    const statusInfo = `🚀 **Статус бота:**
+    const statusInfo = `🚀 <b>Статус бота:</b>
 ✅ Работает (online)
 🕒 Аптайм: ${uptime} сек.
 📡 Сборка: ${process.env.NODE_ENV || 'development'}
 📍 Инстанс: ${process.env.HOSTNAME || 'Local/HF-Space'}`;
-    bot.sendMessage(chatId, statusInfo, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, statusInfo, { parse_mode: 'HTML' });
   });
 
   bot.onText(/\/start/, (msg) => {
@@ -433,8 +433,8 @@ function setupBotHandlers() {
     });
     keyboard.push([{ text: '➕ Добавить новый', callback_data: 'p_add' }]);
 
-    bot.sendMessage(chatId, '🗂 **Ваши системные промпты**\nВыберите активный промпт или создайте новый:', { 
-      parse_mode: 'Markdown',
+    bot.sendMessage(chatId, '🗂 <b>Ваши системные промпты</b>\nВыберите активный промпт или создайте новый:', { 
+      parse_mode: 'HTML',
       reply_markup: { inline_keyboard: keyboard }
     });
   });
@@ -477,7 +477,7 @@ function setupBotHandlers() {
       settings.tempNewPromptName = userInput;
       settings.state = 'waiting_for_new_prompt_text';
       userSettings.set(chatId, settings);
-      return bot.sendMessage(chatId, `Принято название: **${userInput}**\n\nТеперь отправьте сам текст системного промпта (инструкции для ИИ):`, { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, `Принято название: <b>${escapeHtml(userInput)}</b>\n\nТеперь отправьте сам текст системного промпта (инструкции для ИИ):`, { parse_mode: 'HTML' });
     }
 
     if (settings.state === 'waiting_for_new_prompt_text' && userInput && !userInput.startsWith('/')) {
@@ -499,7 +499,7 @@ function setupBotHandlers() {
       settings.activePromptId = newPrompt.id;
       userSettings.set(chatId, settings);
       
-      return bot.sendMessage(chatId, `✅ Промпт **${newPrompt.name}** успешно сохранен и выбран как основной!`, { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, `✅ Промпт <b>${escapeHtml(newPrompt.name)}</b> успешно сохранен и выбран как основной!`, { parse_mode: 'HTML' });
     }
 
     // Если это команда — пропускаем (они обрабатываются в других местах)
@@ -635,7 +635,7 @@ function setupBotHandlers() {
       const history = userHistory.get(chatId);
       if (!history) return bot.answerCallbackQuery(query.id, { text: 'Сессия устарела', show_alert: true });
       
-      bot.editMessageText(`Выбрана модель: **${modelId}**`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+      bot.editMessageText(`Выбрана модель: <b>${modelId}</b>`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML' });
       generateMedia(chatId, query.id, history.originalPrompt, null, modelId, null);
       return;
     }
