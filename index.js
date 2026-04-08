@@ -9,15 +9,39 @@ const systemEnhancePrompt = process.env.SYSTEM_ENHANCE_PROMPT || `Rewrite the fo
 
 let botError = null;
 let bot = null;
+let botUserName = 'Unknown';
 
 if (!token || !token.includes(':')) {
-  botError = "❌ Недействительный токен Telegram-бота. Добавьте TELEGRAM_BOT_TOKEN в Variables and secrets на Hugging Face.";
+  botError = "Недействительный токен Telegram-бота. Проверьте переменную TELEGRAM_BOT_TOKEN.";
   console.error("ОШИБКА: " + botError);
 } else {
   process.env.NTBA_FIX_350 = 1;
-  bot = new TelegramBot(token, { polling: true });
-  console.log("--- БОТ ЗАПУСКАЕТСЯ ---");
-  console.log("Интервал поллинга: активен");
+  try {
+    bot = new TelegramBot(token, { polling: true });
+    console.log("--- БОТ ЗАПУСКАЕТСЯ ---");
+    
+    bot.getMe().then(user => {
+        botUserName = user.username;
+        console.log(`✅ Бот @${botUserName} успешно авторизован.`);
+    }).catch(err => {
+        botError = `Ошибка Bot API: ${err.message}`;
+        console.error(botError);
+    });
+
+    bot.on('polling_error', (error) => {
+        // Не перезаписываем серьезную ошибку авторизации
+        if (!botError) {
+            console.error(`[Polling Error] ${error.code}: ${error.message}`);
+            if (error.message.includes('409 Conflict')) {
+                botError = "Конфликт поллинга: Бот запущен в другом месте (например, локально). Выключите локального бота!";
+            }
+        }
+    });
+
+  } catch (e) {
+    botError = `Ошибка инициализации: ${e.message}`;
+    console.error(botError);
+  }
 }
 
 // State Management
@@ -179,9 +203,41 @@ if (bot) {
 const app = express();
 app.get('/', (req, res) => {
   if (botError) {
-    res.status(500).send(`<h1>Ошибка работы бота</h1><p style="color: red;">${botError}</p>`);
+    res.status(500).send(`
+      <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto;">
+        <h1 style="color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 10px;">❌ Ошибка конфигурации бота</h1>
+        <p style="font-size: 1.1em; background: #fdf2f2; color: #a94442; padding: 15px; border-radius: 5px; border-left: 5px solid #e74c3c;">
+            <strong>Текст ошибки:</strong> ${botError}
+        </p>
+        <h3>🛠 Инструкция по исправлению:</h3>
+        <ol>
+            <li>Зайдите в настройки вашего <strong>Hugging Face Space</strong>.</li>
+            <li>Перейдите во вкладку <strong>Settings</strong>.</li>
+            <li>Найдите раздел <strong>Variables and secrets</strong>.</li>
+            <li>Убедитесь, что там добавлены:
+                <ul>
+                    <li><code>TELEGRAM_BOT_TOKEN</code> (ваш токен от @BotFather)</li>
+                    <li><code>POLLINATIONS_API_KEY</code> (ваш API-ключ, если есть)</li>
+                </ul>
+            </li>
+            <li>Если ошибка <b>"Conflict 409"</b> — выключите бота на своём компьютере, иначе он не будет работать в облаке.</li>
+            <li>После изменения секретов HF автоматически перезапустит билд.</li>
+        </ol>
+        <p style="color: #666; font-size: 0.9em; margin-top: 20px;">Instance ID: ${process.env.HOSTNAME || 'Local'}</p>
+      </div>
+    `);
   } else {
-    res.send('<h1>Бот запущен и работает успешно!</h1><p>Слушаем сообщения Telegram.</p>');
+    res.send(`
+      <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto; text-align: center;">
+        <h1 style="color: #27ae60;">✅ Бот "@${botUserName}" работает!</h1>
+        <div style="background: #f1f8f4; padding: 20px; border-radius: 10px; border: 1px solid #d4edda; margin: 20px 0;">
+            <p style="font-size: 1.2em; color: #155724; font-weight: bold;">Бот активен и ожидает сообщений в Telegram.</p>
+            <p>Статус: <b>Online</b> | Uptime: ${Math.floor(process.uptime())} сек.</p>
+        </div>
+        <a href="https://t.me/${botUserName}" target="_blank" style="display: inline-block; background: #0088cc; color: white; padding: 10px 25px; border-radius: 50px; text-decoration: none; font-weight: bold;">➡️ Открыть в Telegram</a>
+        <p style="color: #666; font-size: 0.9em; margin-top: 30px;">Hugging Face Space Deployment</p>
+      </div>
+    `);
   }
 });
 app.listen(process.env.PORT || 7860, '0.0.0.0', () => console.log('Облачный сервер запущен на 7860'));
