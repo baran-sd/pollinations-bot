@@ -153,6 +153,173 @@ function getSettings(chatId) {
   return userSettings.get(chatId) || { aspectRatio: '1024x1024' };
 }
 
+// ===== CORE: Функция генерации медиа через Pollinations API =====
+async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhancedPrompt, modelId, referenceImageUrl) {
+  const settings = getSettings(chatId);
+  const isVideo = ['ltx-2', 'wan', 'wan-fast', 'seedance', 'veo', 'nova-reel', 'p-video', 'grok-video-pro', 'seedance-pro'].includes(modelId);
+
+  try {
+    // 1. Отвечаем на callback (если есть)
+    if (callbackQueryId) {
+      await bot.answerCallbackQuery(callbackQueryId, { text: isVideo ? '🎬 Генерирую видео...' : '🎨 Генерирую изображение...' });
+    }
+
+    // 2. Отправляем сообщение "в процессе"
+    const statusMsg = await bot.sendMessage(chatId, isVideo
+      ? '🎬 Генерирую видео... Это может занять до 2 минут ⏳'
+      : '🎨 Улучшаю ваш промпт и генерирую изображение... ⏳');
+
+    // 3. Улучшаем промпт (если нет готового)
+    let enhancedPrompt = preEnhancedPrompt;
+    if (!enhancedPrompt) {
+      try {
+        const sysPrompt = settings.systemPrompt || systemEnhancePrompt;
+        const enhanceResponse = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
+          model: 'openai',
+          messages: [
+            { role: 'system', content: sysPrompt },
+            { role: 'user', content: originalPrompt }
+          ],
+          temperature: 0.9,
+          seed: -1
+        }, {
+          headers: {
+            'Authorization': `Bearer ${pollinationsKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        });
+
+        enhancedPrompt = enhanceResponse.data?.choices?.[0]?.message?.content?.trim();
+        if (!enhancedPrompt) {
+          enhancedPrompt = originalPrompt;
+        }
+        console.log(`✨ Промпт улучшен: "${originalPrompt}" → "${enhancedPrompt}"`);
+      } catch (enhanceErr) {
+        console.error('⚠️ Ошибка улучшения промпта, используем оригинал:', enhanceErr.message);
+        enhancedPrompt = originalPrompt;
+      }
+    }
+
+    // 4. Сохраняем историю
+    userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId });
+
+    // 5. Обновляем статус
+    await bot.editMessageText(
+      isVideo
+        ? `🎬 Генерирую видео...\n\n📝 Улучшенный промпт:\n_${enhancedPrompt}_`
+        : `🎨 Генерирую изображение...\n\n📝 Улучшенный промпт:\n_${enhancedPrompt}_`,
+      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+    ).catch(() => {});
+
+    // 6. Формируем URL для генерации
+    const encodedPrompt = encodeURIComponent(enhancedPrompt);
+    const [width, height] = (settings.aspectRatio || '1024x1024').split('x');
+
+    const params = new URLSearchParams();
+    params.set('model', modelId);
+    params.set('seed', '-1');
+    params.set('nologo', 'true');
+    if (pollinationsKey) {
+      params.set('key', pollinationsKey);
+    }
+
+    if (referenceImageUrl) {
+      params.set('image', referenceImageUrl);
+    }
+
+    if (isVideo) {
+      params.set('duration', '5');
+      params.set('aspectRatio', parseInt(width) > parseInt(height) ? '16:9' : '9:16');
+    } else {
+      params.set('width', width);
+      params.set('height', height);
+    }
+
+    const imageUrl = `https://gen.pollinations.ai/image/${encodedPrompt}?${params.toString()}`;
+    console.log(`🌐 Запрос: ${imageUrl}`);
+
+    // 7. Скачиваем результат
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: isVideo ? 180000 : 90000, // 3 мин для видео, 1.5 мин для изображений
+      headers: pollinationsKey ? { 'Authorization': `Bearer ${pollinationsKey}` } : {},
+      maxRedirects: 5
+    });
+
+    const contentType = response.headers['content-type'] || '';
+    const buffer = Buffer.from(response.data);
+
+    if (buffer.length < 1000) {
+      throw new Error('Получен слишком маленький файл — возможно ошибка API');
+    }
+
+    console.log(`✅ Получен ответ: ${contentType}, размер: ${buffer.length} байт`);
+
+    // 8. Удаляем статусное сообщение
+    await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    // 9. Кнопки действий
+    const actionKeyboard = {
+      inline_keyboard: [
+        [
+          { text: '🔄 Перегенерировать', callback_data: 'action_regen' },
+          { text: '🎬 Сделать видео', callback_data: 'action_video' }
+        ]
+      ]
+    };
+
+    const caption = `✨ **Промпт:** _${enhancedPrompt}_\n🎨 **Модель:** ${modelId}\n📐 **Размер:** ${settings.aspectRatio || '1024x1024'}`;
+
+    // 10. Отправляем результат
+    if (isVideo || contentType.includes('video')) {
+      await bot.sendVideo(chatId, buffer, {
+        caption: caption,
+        parse_mode: 'Markdown',
+        reply_markup: JSON.stringify(actionKeyboard)
+      }, {
+        filename: 'video.mp4',
+        contentType: 'video/mp4'
+      });
+    } else {
+      await bot.sendPhoto(chatId, buffer, {
+        caption: caption,
+        parse_mode: 'Markdown',
+        reply_markup: JSON.stringify(actionKeyboard)
+      }, {
+        filename: 'image.jpg',
+        contentType: contentType || 'image/jpeg'
+      });
+    }
+
+    console.log(`📨 Результат отправлен в чат ${chatId}`);
+
+  } catch (error) {
+    console.error(`❌ Ошибка генерации для чата ${chatId}:`, error.message);
+
+    let errorMessage = '❌ Ошибка при генерации.';
+
+    if (error.response) {
+      const status = error.response.status;
+      if (status === 401) {
+        errorMessage = '❌ Ошибка авторизации API. Проверьте POLLINATIONS_API_KEY.';
+      } else if (status === 402) {
+        errorMessage = '❌ Недостаточно баланса на Pollinations. Пополните аккаунт.';
+      } else if (status === 429) {
+        errorMessage = '❌ Слишком много запросов. Подождите немного и попробуйте снова.';
+      } else {
+        errorMessage = `❌ Ошибка API (${status}): ${error.response.statusText || 'Unknown'}`;
+      }
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      errorMessage = '❌ Таймаут — генерация заняла слишком долго. Попробуйте снова или выберите другую модель.';
+    } else if (error.code === 'ENOTFOUND') {
+      errorMessage = '❌ Не удалось подключиться к Pollinations API. Проблемы с сетью.';
+    }
+
+    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${error.message}`);
+  }
+}
+
 function setupBotHandlers() {
   if (setupBotHandlers.done) return;
   setupBotHandlers.done = true;
@@ -238,7 +405,7 @@ function setupBotHandlers() {
       try {
         const fileLink = await bot.getFileLink(photoId); 
         // Запускаем переработку фото
-        await generateMedia(chatId, null, caption, null, 'flux-klein', fileLink); 
+        await generateMedia(chatId, null, caption, null, 'klein', fileLink); 
       } catch (err) {
         bot.sendMessage(chatId, "❌ Ошибка получения картинки от Telegram.");
       }
@@ -255,7 +422,7 @@ function setupBotHandlers() {
         [
           { text: '🌟 Z-Image Turbo', callback_data: 'model_zimage' },
           { text: '⚡ Flux Schnell', callback_data: 'model_flux' },
-          { text: '💎 Flux Klein', callback_data: 'model_flux-klein' }
+          { text: '💎 Flux Klein', callback_data: 'model_klein' }
         ]
       ]
     };
@@ -279,7 +446,7 @@ function setupBotHandlers() {
     }
   
     if (data.startsWith('model_')) {
-      const modelId = data.split('_')[1];
+      const modelId = data.substring('model_'.length);
       const history = userHistory.get(chatId);
       if (!history) return bot.answerCallbackQuery(query.id, { text: 'Сессия устарела', show_alert: true });
       
