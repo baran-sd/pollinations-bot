@@ -4,6 +4,20 @@ const axios = require('axios');
 const express = require('express');
 const dns = require('dns');
 
+// БЛОК ОБХОДА DNS БЛОКИРОВКИ ДЛЯ API.TELEGRAM.ORG
+const originalLookup = dns.lookup;
+dns.lookup = (hostname, options, callback) => {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  if (hostname === 'api.telegram.org') {
+    console.log(`[DNS Hijack] Перенаправляем api.telegram.org -> 149.154.167.220`);
+    return callback(null, [{ address: '149.154.167.220', family: 4 }], 4);
+  }
+  return originalLookup(hostname, options, callback);
+};
+
 // Принудительно устанавливаем Google DNS для обхода проблем в Private Space
 try {
   dns.setServers(['8.8.8.8', '8.8.4.4']);
