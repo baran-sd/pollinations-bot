@@ -363,6 +363,11 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     const imageUrl = `https://gen.pollinations.ai/image/${encodedPrompt}?${params.toString()}`;
     console.log(`🌐 Запрос: ${imageUrl}`);
 
+    // Сохраняем URL картинки для возможности анимации (если это не видео)
+    if (!isVideo) {
+      userHistory.set(chatId, { ...userHistory.get(chatId), lastImageUrl: imageUrl });
+    }
+
     // 7. Скачиваем результат
     const response = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
@@ -801,7 +806,7 @@ function setupBotHandlers() {
     if (data === 'action_video') {
       const history = userHistory.get(chatId);
       if (!history || !history.enhancedPrompt) return bot.answerCallbackQuery(query.id, { text: 'Нет истории', show_alert: true });
-      generateMedia(chatId, query.id, history.originalPrompt, history.enhancedPrompt, 'ltx-2', null);
+      generateMedia(chatId, query.id, history.originalPrompt, history.enhancedPrompt, 'ltx-2', history.lastImageUrl);
       return;
     }
   });
