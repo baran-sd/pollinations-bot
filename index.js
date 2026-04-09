@@ -262,7 +262,8 @@ const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, mo
 function getSettings(chatId) {
   const settings = userSettings.get(chatId) || { 
     aspectRatio: '768x1024',
-    activePromptId: 'cadavre'
+    activePromptId: 'cadavre',
+    llmModel: 'openai-fast'
   };
   return settings;
 }
@@ -292,7 +293,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
         const sysPrompt = activePromptObj ? activePromptObj.text : systemEnhancePrompt;
         
         const enhanceResponse = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
-          model: 'openai-fast',
+          model: settings.llmModel || 'openai-fast',
           messages: [
             { role: 'system', content: sysPrompt },
             { role: 'user', content: originalPrompt }
@@ -539,14 +540,14 @@ function setupBotHandlers() {
 
   bot.onText(/\/settings/, (msg) => {
     const chatId = msg.chat.id;
+    const settings = getSettings(chatId);
     const keyboard = {
       inline_keyboard: [
-        [{ text: '🔲 Квадрат (1024x1024)', callback_data: 'ar_1024x1024' }],
-        [{ text: '📱 Вертикальный (768x1024)', callback_data: 'ar_768x1024' }],
-        [{ text: '💻 Горизонтальный (1024x768)', callback_data: 'ar_1024x768' }]
+        [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+        [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
       ]
     };
-    bot.sendMessage(chatId, '⚙️ Выберите формат генерируемых изображений по умолчанию:', { reply_markup: JSON.stringify(keyboard) });
+    bot.sendMessage(chatId, '⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { parse_mode: 'HTML', reply_markup: JSON.stringify(keyboard) });
   });
 
   bot.on('message', async (msg) => {
@@ -702,14 +703,81 @@ function setupBotHandlers() {
     }
 
     // --- Original Handlers ---
+    if (data === 'settings_ar') {
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '🔲 Квадрат (1024x1024)', callback_data: 'ar_1024x1024' }],
+          [{ text: '📱 Вертикальный (768x1024)', callback_data: 'ar_768x1024' }],
+          [{ text: '💻 Горизонтальный (1024x768)', callback_data: 'ar_1024x768' }],
+          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
+        ]
+      };
+      bot.editMessageText('📐 Выберите формат изображений:', { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'settings_llm') {
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '⚡ OpenAI Fast (Default)', callback_data: 'llm_openai-fast' }],
+          [{ text: '🧠 OpenAI Search', callback_data: 'llm_searchgpt' }],
+          [{ text: '💎 Mistral Large', callback_data: 'llm_mistral-large' }],
+          [{ text: '🌌 Qwen 72B', callback_data: 'llm_qwen' }],
+          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
+        ]
+      };
+      bot.editMessageText('🤖 Выберите LLM модель для улучшения промптов:', { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'settings_back') {
+      const settings = getSettings(chatId);
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('llm_')) {
+      const model = data.replace('llm_', '');
+      const settings = getSettings(chatId);
+      settings.llmModel = model;
+      userSettings.set(chatId, settings);
+      bot.answerCallbackQuery(query.id, { text: `Модель изменена на ${model}` });
+      
+      // Вернуться в главное меню настроек
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🤖 LLM Модель: ${settings.llmModel}`, callback_data: 'settings_llm' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      return;
+    }
+
     if (data.startsWith('ar_')) {
       const ar = data.split('_')[1];
       console.log(`⚙️ Смена формата (ChatID: ${chatId}) на: ${ar}`);
       const settings = getSettings(chatId);
       settings.aspectRatio = ar;
       userSettings.set(chatId, settings);
-      bot.editMessageText(`✅ Формат изменен на ${ar}\nВсе новые картинки будут создаваться в этом размере.`, { chat_id: chatId, message_id: query.message.message_id });
-      bot.answerCallbackQuery(query.id);
+      bot.answerCallbackQuery(query.id, { text: `Формат: ${ar}` });
+      
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       return;
     }
   
