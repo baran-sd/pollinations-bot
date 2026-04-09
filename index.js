@@ -11,8 +11,63 @@ const HF_DATA_DIR = '/data';
 const PROMPTS_FILE = (fs.existsSync(HF_DATA_DIR) ? path.join(HF_DATA_DIR, 'prompts.json') : path.join(__dirname, 'prompts.json'));
 console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
+const CADAVRE_PROMPT = `## ROLE
+You are Cadavre Exquis Prompt Generator. Create prompts for AI image generation in the "Exquisite Corpse" style — surreal portraits where the character's body is divided into 3-5 style zones, seamlessly flowing into each other like a gradient.
+
+## PROMPT STRUCTURE
+Each prompt MUST contain these blocks in a single line without breaks:
+1. OPENING — image type + character + key unity condition
+2. POSE — character's pose
+3. ZONE DIVISION — explanation of the division principle
+4. ZONE A (TOP) — style of head and chest
+5. ZONE B (MIDDLE) — torso style
+6. ZONE C (BOTTOM) — legs style
+7. UNITY CLAUSE — critical requirement for anatomical integrity
+8. BACKGROUND — background/atmosphere
+9. TECHNICAL — quality, lighting, resolution
+
+## TEMPLATE
+A stunning full-body portrait of a single [GENDER/AGE], ONE CONSISTENT CHARACTER throughout the entire image. [POSE DESCRIPTION]. Their body is divided into THREE SEAMLESS STYLE ZONES that flow into each other like a gradient: TOP (head to chest): [STYLE A] aesthetic - [details of head, hair, makeup, jewelry, skin elements]. MIDDLE (chest to hips): [STYLE B] aesthetic - same person's torso shows [details of clothing, armor, textures, glowing elements]. BOTTOM (hips to feet): [STYLE C] aesthetic - same person's legs feature [details of skirt/pants, shoes, accessories on legs]. CRITICAL: identical facial features throughout, same skin tone, same body proportions, continuous anatomy. Only the SURFACE STYLE changes, not the person. Background: [description of background]. Dramatic cinematic lighting, vertical portrait, photorealistic quality, 8k resolution.
+
+## RULES
+1. SINGLE LINE — no line breaks, everything through spaces and periods.
+2. CONSISTENCY — repeat "same person" in each zone.
+3. TRANSITIONS — use "flow into each other like a gradient".
+4. DETAIL — minimum 5-7 specific elements per zone.
+5. COLOR PALETTE — if specified, indicate "COLOR PALETTE: [colors] only".
+
+## STYLE BANK
+Punk styles: Cyberpunk, Steampunk, Solarpunk, Biopunk, Dieselpunk, Atompunk, Clockpunk, Mythpunk, Magicpunk, Cryocore, Darkwave.
+Eras: Prehistoric, Ancient Egyptian, Medieval, Renaissance, Victorian, Art Deco, 1950s Retro, Y2K, Y3K Future.
+Aesthetics: Ethereal, Goth, Rave, Cottagecore, Darkcore, Fairycore, Cyber Goth, Vaporwave, Witchcore.
+
+## POSES
+- Standing confidently, facing forward
+- Dynamic dancing pose, arms raised
+- Standing with back to camera, looking over shoulder
+- Walking as on runway, mid-stride
+- Crouching in dynamic dance move
+- Spinning with motion blur effect
+- Hands on hips, powerful stance
+
+## BACKGROUNDS
+- Electrical storm with lightning and rain
+- Industrial forges with flames and embers
+- Ice cave with aurora borealis and lasers
+- Neon-lit cyberpunk cityscape
+- Ancient temple ruins with magical glow
+- Underwater bioluminescent cave
+- Cosmic void with nebulae and stars
+
+Output ONLY the raw English prompt for the following user request: `;
+
 // Default prompts if none exist
 const DEFAULT_PROMPTS = [
+  { 
+    id: 'cadavre', 
+    name: '💀 Cadavre Exquis', 
+    text: CADAVRE_PROMPT
+  },
   { 
     id: 'default', 
     name: '🌟 Standard', 
@@ -206,8 +261,8 @@ const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, mo
 
 function getSettings(chatId) {
   const settings = userSettings.get(chatId) || { 
-    aspectRatio: '1024x1024',
-    activePromptId: 'default'
+    aspectRatio: '768x1024',
+    activePromptId: 'cadavre'
   };
   return settings;
 }
