@@ -105,8 +105,6 @@ function saveSavedPrompts(prompts) {
   }
 }
 
-let savedPrompts = loadSavedPrompts();
-
 
 // БЛОК ОБХОДА DNS БЛОКИРОВКИ ДЛЯ API.TELEGRAM.ORG
 const originalLookup = dns.lookup;
@@ -256,44 +254,116 @@ function escapeHtml(text) {
 }
 
 // State Management
-const userSettings = new Map(); // chatId -> { aspectRatio: '...', systemPrompt: '...', state: '...' }
-const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, modelId }
+const userSettings = new Map(); // chatId -> { aspectRatio: '...', activePromptId: '...', state: '...', defaults: {} }
+const userHistory = new Map(); // chatId -> { originalPrompt, enhancedPrompt, modelId, lastImageUrl, category }
+
+// Model Definitions (Free models based on Pollinations API docs)
+const MODELS = {
+  text: [
+    { id: 'openai', name: 'OpenAI GPT-5.4 Nano' },
+    { id: 'openai-fast', name: 'OpenAI GPT-5 Nano (Fast)' },
+    { id: 'deepseek', name: 'DeepSeek V3' },
+    { id: 'grok', name: 'xAI Grok 4.1' },
+    { id: 'gemini-fast', name: 'Google Gemini 2.5 Flash' },
+    { id: 'mistral-large', name: 'Mistral Large 3' },
+    { id: 'qwen-large', name: 'Qwen 3.5 Plus' },
+    { id: 'claude-fast', name: 'Anthropic Claude Haiku 4.5' },
+    { id: 'perplexity-fast', name: 'Perplexity Sonar' },
+    { id: 'kimi', name: 'Moonshot Kimi K2' },
+    { id: 'nova', name: 'Amazon Nova 2' },
+    { id: 'glm', name: 'Z.ai GLM-5' },
+    { id: 'minimax', name: 'MiniMax M2.5' },
+    { id: 'polly', name: 'Polly Assistant' }
+  ],
+  image: [
+    { id: 'flux', name: 'Flux Schnell' },
+    { id: 'zimage', name: 'Z-Image Turbo' },
+    { id: 'kontext', name: 'Flux Kontext' },
+    { id: 'gptimage', name: 'GPT Image 1 Mini' },
+    { id: 'wan-image', name: 'Wan 2.7 Image' },
+    { id: 'qwen-image', name: 'Qwen Image Plus' },
+    { id: 'klein', name: 'Flux Klein' }
+  ],
+  video: [
+    { id: 'ltx-2', name: 'LTX-2.3 (Fast)' },
+    { id: 'nova-reel', name: 'Amazon Nova Reel' }
+  ],
+  audio: [
+    { id: 'elevenlabs', name: 'ElevenLabs TTS' },
+    { id: 'elevenmusic', name: 'ElevenLabs Music' },
+    { id: 'acestep', name: 'ACE-Step Music' },
+    { id: 'scribe', name: 'ElevenLabs Scribe' }
+  ]
+};
 
 function getSettings(chatId) {
-  const settings = userSettings.get(chatId) || { 
-    aspectRatio: '768x1024',
-    activePromptId: 'cadavre',
-    llmModel: 'openai-fast'
-  };
+  let settings = userSettings.get(chatId);
+  if (!settings) {
+    settings = { 
+      aspectRatio: '1024x1024',
+      activePromptId: 'cadavre',
+      defaults: {
+        text: 'openai-fast',
+        image: 'flux',
+        video: 'ltx-2',
+        audio: 'elevenlabs'
+      }
+    };
+    userSettings.set(chatId, settings);
+  }
   return settings;
 }
 
-// ===== CORE: Функция генерации медиа через Pollinations API =====
-async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhancedPrompt, modelId, referenceImageUrl) {
+// ===== CORE: Универсальная функция генерации (Text, Image, Video, Audio) =====
+async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhancedPrompt, modelId, category, referenceImageUrl) {
   const settings = getSettings(chatId);
-  const isVideo = ['ltx-2', 'wan', 'wan-fast', 'seedance', 'veo', 'nova-reel', 'p-video', 'grok-video-pro', 'seedance-pro'].includes(modelId);
+  const isVideo = category === 'video' || ['ltx-2', 'nova-reel', 'wan', 'wan-fast'].includes(modelId);
+  const isAudio = category === 'audio' || ['elevenlabs', 'elevenmusic', 'acestep', 'scribe'].includes(modelId);
+  const isText = category === 'text' || MODELS.text.some(m => m.id === modelId);
 
   try {
-    // 1. Отвечаем на callback (если есть)
     if (callbackQueryId) {
-      await bot.answerCallbackQuery(callbackQueryId, { text: isVideo ? '🎬 Генерирую видео...' : '🎨 Генерирую изображение...' });
+      const respText = isVideo ? '🎬 Генерирую видео...' : (isAudio ? '🎵 Генерирую аудио...' : (isText ? '💬 Генерирую ответ...' : '🎨 Генерирую изображение...'));
+      await bot.answerCallbackQuery(callbackQueryId, { text: respText });
     }
 
-    // 2. Отправляем сообщение "в процессе"
-    const statusMsg = await bot.sendMessage(chatId, isVideo
-      ? '🎬 Генерирую видео... Это может занять до 2 минут ⏳'
-      : '🎨 Улучшаю ваш промпт и генерирую изображение... ⏳');
+    const waitMsg = isVideo ? '🎬 Генерирую видео... (до 2 мин) ⏳' : 
+                   (isAudio ? '🎵 Генерирую аудио... ⏳' : 
+                   (isText ? '💬 Думаю над ответом... ⏳' : 
+                   '🎨 Улучшаю промпт и рисую... ⏳'));
+    const statusMsg = await bot.sendMessage(chatId, waitMsg);
 
-    // 3. Улучшаем промпт (если нет готового)
+    // --- 1. Текстовая генерация (LLM) ---
+    if (isText) {
+      const response = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
+        model: modelId,
+        messages: [{ role: 'user', content: originalPrompt }],
+        temperature: 0.7,
+        seed: -1
+      }, {
+        headers: pollinationsKey ? { 'Authorization': `Bearer ${pollinationsKey}` } : {},
+        timeout: 60000
+      });
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+      if (!content) throw new Error('Пустой ответ от модели');
+      
+      await bot.sendMessage(chatId, `💬 <b>Ответ (${modelId}):</b>\n\n${escapeHtml(content)}`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // --- 2. Улучшение промпта (только для картинок и видео) ---
     let enhancedPrompt = preEnhancedPrompt;
-    if (!enhancedPrompt) {
+    if (!enhancedPrompt && !isAudio) {
       try {
-        const userPrompts = savedPrompts[chatId] || savedPrompts.global;
+        const allPrompts = loadSavedPrompts();
+        const userPrompts = allPrompts[chatId] || allPrompts.global;
         const activePromptObj = userPrompts.find(p => p.id === settings.activePromptId) || userPrompts[0];
-        const sysPrompt = activePromptObj ? activePromptObj.text : systemEnhancePrompt;
+        const sysPrompt = activePromptObj ? activePromptObj.text : (process.env.SYSTEM_ENHANCE_PROMPT || systemEnhancePrompt);
         
         const enhanceResponse = await axios.post('https://gen.pollinations.ai/v1/chat/completions', {
-          model: settings.llmModel || 'openai-fast',
+          model: settings.defaults.text || 'openai-fast',
           messages: [
             { role: 'system', content: sysPrompt },
             { role: 'user', content: originalPrompt }
@@ -301,177 +371,85 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
           temperature: 0.9,
           seed: -1
         }, {
-          headers: {
-            'Authorization': `Bearer ${pollinationsKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 60000
+          headers: pollinationsKey ? { 'Authorization': `Bearer ${pollinationsKey}` } : {},
+          timeout: 40000
         });
 
         enhancedPrompt = enhanceResponse.data?.choices?.[0]?.message?.content?.trim();
-        if (!enhancedPrompt) {
-          enhancedPrompt = originalPrompt;
-        }
-        console.log(`✨ Промпт улучшен: "${originalPrompt}" → "${enhancedPrompt}"`);
-      } catch (enhanceErr) {
-        console.error('⚠️ Ошибка улучшения промпта, используем оригинал:', enhanceErr.message);
+      } catch (err) {
+        console.warn('⚠️ Ошибка улучшения:', err.message);
         enhancedPrompt = originalPrompt;
       }
     }
+    if (!enhancedPrompt) enhancedPrompt = originalPrompt;
 
-    // 4. Сохраняем историю
-    userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId });
-
-    // 5. Обновляем статус (обрезаем до безопасной длины)
-    const statusPrompt = escapeHtml(enhancedPrompt.length > 500 ? enhancedPrompt.substring(0, 500) + '...' : enhancedPrompt);
-    const statusType = isVideo ? '🎬 Генерирую видео...' : '🎨 Генерирую изображение...';
-    await bot.editMessageText(
-      `${statusType}\n\n📝 Улучшенный промпт:\n<i>${statusPrompt}</i>`,
-      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'HTML' }
-    ).catch(() => {
-      // Fallback без форматирования
-      bot.editMessageText(
-        `${statusType}\n\n📝 Улучшенный промпт:\n${enhancedPrompt.substring(0, 500)}`,
-        { chat_id: chatId, message_id: statusMsg.message_id }
-      ).catch(() => {});
-    });
-
-    // 6. Формируем URL для генерации
-    const encodedPrompt = encodeURIComponent(enhancedPrompt);
-    const [width, height] = (settings.aspectRatio || '1024x1024').split('x');
-
+    // --- 3. Формирование URL для Медиа (Image, Video, Audio) ---
     const params = new URLSearchParams();
     params.set('model', modelId);
-    params.set('seed', '-1');
-    params.set('nologo', 'true');
-    if (pollinationsKey) {
-      params.set('key', pollinationsKey);
-    }
+    if (pollinationsKey) params.set('key', pollinationsKey);
 
-    if (referenceImageUrl) {
-      params.set('image', referenceImageUrl);
-    }
-
-    if (isVideo) {
-      params.set('duration', '5');
-      params.set('aspectRatio', parseInt(width) > parseInt(height) ? '16:9' : '9:16');
+    let apiUrl = '';
+    if (isAudio) {
+      apiUrl = `https://gen.pollinations.ai/audio/${encodeURIComponent(originalPrompt)}?${params.toString()}`;
+      if (modelId === 'elevenlabs') params.set('voice', 'nova'); // Default voice
     } else {
-      params.set('width', width);
-      params.set('height', height);
+      params.set('seed', '-1');
+      params.set('nologo', 'true');
+      if (referenceImageUrl) params.set('image', referenceImageUrl);
+      
+      if (isVideo) {
+        params.set('duration', '5');
+        const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
+        params.set('aspectRatio', parseInt(w) > parseInt(h) ? '16:9' : '9:16');
+      } else {
+        const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
+        params.set('width', w);
+        params.set('height', h);
+      }
+      apiUrl = `https://gen.pollinations.ai/image/${encodeURIComponent(enhancedPrompt)}?${params.toString()}`;
     }
 
-    const imageUrl = `https://gen.pollinations.ai/image/${encodedPrompt}?${params.toString()}`;
-    console.log(`🌐 Запрос: ${imageUrl}`);
+    console.log(`🌐 API Request: ${apiUrl}`);
 
-    // Сохраняем URL картинки для возможности анимации (если это не видео)
-    if (!isVideo) {
-      userHistory.set(chatId, { ...userHistory.get(chatId), lastImageUrl: imageUrl });
-    }
-
-    // 7. Скачиваем результат
-    const response = await axios.get(imageUrl, {
+    const response = await axios.get(apiUrl, {
       responseType: 'arraybuffer',
-      timeout: isVideo ? 180000 : 90000, // 3 мин для видео, 1.5 мин для изображений
-      headers: pollinationsKey ? { 'Authorization': `Bearer ${pollinationsKey}` } : {},
-      maxRedirects: 5
+      timeout: isVideo ? 180000 : 90000,
+      headers: pollinationsKey ? { 'Authorization': `Bearer ${pollinationsKey}` } : {}
     });
 
-    const contentType = response.headers['content-type'] || '';
     const buffer = Buffer.from(response.data);
+    const contentType = response.headers['content-type'] || '';
+    if (buffer.length < 500) throw new Error('Response too small - possible error');
 
-    if (buffer.length < 1000) {
-      throw new Error('Получен слишком маленький файл — возможно ошибка API');
-    }
-
-    console.log(`✅ Получен ответ: ${contentType}, размер: ${buffer.length} байт`);
-
-    // 8. Удаляем статусное сообщение
     await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
-    // 9. Кнопки действий
+    // --- 4. Отправка результата ---
     const actionKeyboard = {
       inline_keyboard: [
         [
-          { text: '🔄 Перегенерировать', callback_data: 'action_regen' },
-          { text: '🎬 Сделать видео', callback_data: 'action_video' }
-        ]
+          { text: '🔄 Снова', callback_data: `action_regen` },
+          category === 'image' ? { text: '🎬 Сделать Видео', callback_data: 'action_image_to_video' } : null
+        ].filter(Boolean)
       ]
     };
 
-    // 10. Отправляем результат — обрезаем промпт ДО обёртки в HTML теги
-    const maxPromptLen = 800;
-    let displayPrompt = escapeHtml(enhancedPrompt);
-    if (displayPrompt.length > maxPromptLen) {
-      displayPrompt = displayPrompt.substring(0, maxPromptLen) + '...';
+    const caption = isAudio ? `🎵 <b>Аудио:</b> ${originalPrompt}\n🤖 <b>Модель:</b> ${modelId}` :
+                   `✨ <b>Промпт:</b> <i>${escapeHtml(enhancedPrompt.substring(0, 500))}</i>\n🎨 <b>Модель:</b> ${modelId}`;
+
+    const sendOps = { caption, parse_mode: 'HTML', reply_markup: JSON.stringify(actionKeyboard) };
+
+    if (isAudio) {
+      await bot.sendAudio(chatId, buffer, { caption, ...sendOps }, { filename: 'audio.mp3', contentType: 'audio/mpeg' });
+    } else if (isVideo) {
+      await bot.sendVideo(chatId, buffer, sendOps, { filename: 'video.mp4', contentType: 'video/mp4' });
+    } else {
+      userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId, category, lastImageUrl: apiUrl });
+      await bot.sendPhoto(chatId, buffer, sendOps);
     }
-    const caption = `✨ <b>Промпт:</b> <i>${displayPrompt}</i>\n🎨 <b>Модель:</b> ${modelId}\n📐 <b>Размер:</b> ${settings.aspectRatio || '1024x1024'}`;
-    
-    // Fallback-подход: если HTML не проходит — отправляем без форматирования
-    const plainCaption = `✨ Промпт: ${enhancedPrompt.substring(0, maxPromptLen)}${enhancedPrompt.length > maxPromptLen ? '...' : ''}\n🎨 Модель: ${modelId}\n📐 Размер: ${settings.aspectRatio || '1024x1024'}`;
-
-    const sendOptions = { parse_mode: 'HTML', reply_markup: JSON.stringify(actionKeyboard) };
-    const sendOptionsFallback = { reply_markup: JSON.stringify(actionKeyboard) };
-
-    try {
-      if (isVideo || contentType.includes('video')) {
-        await bot.sendVideo(chatId, buffer, {
-          caption, ...sendOptions
-        }, {
-          filename: 'video.mp4',
-          contentType: 'video/mp4'
-        });
-      } else {
-        await bot.sendPhoto(chatId, buffer, {
-          caption, ...sendOptions
-        }, {
-          filename: 'image.jpg',
-          contentType: contentType || 'image/jpeg'
-        });
-      }
-    } catch (sendErr) {
-      console.warn('⚠️ Ошибка отправки с HTML, пробуем без форматирования:', sendErr.message);
-      if (isVideo || contentType.includes('video')) {
-        await bot.sendVideo(chatId, buffer, {
-          caption: plainCaption, ...sendOptionsFallback
-        }, {
-          filename: 'video.mp4',
-          contentType: 'video/mp4'
-        });
-      } else {
-        await bot.sendPhoto(chatId, buffer, {
-          caption: plainCaption, ...sendOptionsFallback
-        }, {
-          filename: 'image.jpg',
-          contentType: contentType || 'image/jpeg'
-        });
-      }
-    }
-
-    console.log(`📨 Результат отправлен в чат ${chatId}`);
 
   } catch (error) {
-    console.error(`❌ Ошибка генерации для чата ${chatId}:`, error.message);
-
-    let errorMessage = '❌ Ошибка при генерации.';
-
-    if (error.response) {
-      const status = error.response.status;
-      if (status === 401) {
-        errorMessage = '❌ Ошибка авторизации API. Проверьте POLLINATIONS_API_KEY.';
-      } else if (status === 402) {
-        errorMessage = '❌ Недостаточно баланса на Pollinations. Пополните аккаунт.';
-      } else if (status === 429) {
-        errorMessage = '❌ Слишком много запросов. Подождите немного и попробуйте снова.';
-      } else {
-        errorMessage = `❌ Ошибка API (${status}): ${error.response.statusText || 'Unknown'}`;
-      }
-    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      errorMessage = '❌ Таймаут — генерация заняла слишком долго. Попробуйте снова или выберите другую модель.';
-    } else if (error.code === 'ENOTFOUND') {
-      errorMessage = '❌ Не удалось подключиться к Pollinations API. Проблемы с сетью.';
-    }
-
-    await bot.sendMessage(chatId, `${errorMessage}\n\n🔧 Детали: ${escapeHtml(error.message)}`);
+    console.error('❌ Generation Error:', error.message);
+    await bot.sendMessage(chatId, `❌ Ошибка: ${escapeHtml(error.message)}`);
   }
 }
 
@@ -507,7 +485,8 @@ function setupBotHandlers() {
   bot.onText(/\/prompts/, (msg) => {
     const chatId = msg.chat.id;
     const settings = getSettings(chatId);
-    const userPrompts = savedPrompts[chatId] || savedPrompts.global;
+    const allPrompts = loadSavedPrompts();
+    const userPrompts = allPrompts[chatId] || allPrompts.global;
     
     let keyboard = [];
     userPrompts.forEach(p => {
@@ -562,71 +541,65 @@ function setupBotHandlers() {
     
     // БЛОК 1: Обработка Мастера создания промптов (ВЫСШИЙ ПРИОРИТЕТ)
     if (settings.state === 'waiting_for_new_prompt_name' && userInput && !userInput.startsWith('/')) {
-      console.log(`[Wizard] Получено название: "${userInput}" для чата ${chatId}`);
       settings.tempNewPromptName = userInput;
       settings.state = 'waiting_for_new_prompt_text';
       userSettings.set(chatId, settings);
-      return bot.sendMessage(chatId, `Принято название: <b>${escapeHtml(userInput)}</b>\n\nТеперь отправьте сам текст системного промпта (инструкции для ИИ):`, { parse_mode: 'HTML' });
+      return bot.sendMessage(chatId, `Принято название: <b>${escapeHtml(userInput)}</b>\n\nТеперь отправьте сам текст системного промпта:`, { parse_mode: 'HTML' });
     }
 
     if (settings.state === 'waiting_for_new_prompt_text' && userInput && !userInput.startsWith('/')) {
-      console.log(`[Wizard] Получен текст промпта для "${settings.tempNewPromptName}"`);
-      const newPrompt = {
-        id: 'p_' + Date.now(),
-        name: settings.tempNewPromptName,
-        text: userInput
-      };
-      
-      if (!savedPrompts[chatId]) {
-        savedPrompts[chatId] = [...(savedPrompts.global || DEFAULT_PROMPTS)];
-      }
-      savedPrompts[chatId].push(newPrompt);
-      saveSavedPrompts(savedPrompts);
-
+      const newPrompt = { id: 'p_' + Date.now(), name: settings.tempNewPromptName, text: userInput };
+      const allPrompts = loadSavedPrompts();
+      if (!allPrompts[chatId]) allPrompts[chatId] = [...(allPrompts.global || DEFAULT_PROMPTS)];
+      allPrompts[chatId].push(newPrompt);
+      saveSavedPrompts(allPrompts);
       settings.state = null;
       settings.tempNewPromptName = null;
       settings.activePromptId = newPrompt.id;
       userSettings.set(chatId, settings);
-      
-      return bot.sendMessage(chatId, `✅ Промпт <b>${escapeHtml(newPrompt.name)}</b> успешно сохранен и выбран как основной!`, { parse_mode: 'HTML' });
+      return bot.sendMessage(chatId, `✅ Промпт <b>${escapeHtml(newPrompt.name)}</b> сохранен!`, { parse_mode: 'HTML' });
     }
 
-    // Если это команда — пропускаем (они обрабатываются в других местах)
+    if (settings.state === 'waiting_for_video_prompt' && userInput && !userInput.startsWith('/')) {
+      const history = userHistory.get(chatId);
+      settings.state = null;
+      userSettings.set(chatId, settings);
+      if (!history || !history.lastImageUrl) return bot.sendMessage(chatId, "❌ Ошибка: базовое изображение потеряно.");
+      return generateMedia(chatId, null, userInput, null, settings.defaults.video, 'video', history.lastImageUrl);
+    }
+
     if (userInput && userInput.startsWith('/')) return;
 
     if (userInput) {
-        console.log(`📩 Сообщение от @${msg.from.username || 'unknown'} [${chatId}]: "${userInput}"`);
+      console.log(`📩 Prompt from @${msg.from.username || 'unknown'}: "${userInput}"`);
+      userHistory.set(chatId, { originalPrompt: userInput });
+
+      const categoryKeyboard = {
+        inline_keyboard: [[
+          { text: '🎨 Картинка', callback_data: 'cat_image' },
+          { text: '🎬 Видео', callback_data: 'cat_video' }
+        ], [
+          { text: '🎵 Аудио', callback_data: 'cat_audio' },
+          { text: '💬 Текст', callback_data: 'cat_text' }
+        ]]
+      };
+
+      await bot.sendMessage(chatId, `Что создаем для промпта:\n"${userInput}"?`, {
+        reply_markup: JSON.stringify(categoryKeyboard)
+      });
     }
 
-    // Обработка Фото
-    if (msg.photo) {
+    // Обработка Фото (для редактирования)
+    if (msg.photo && !userInput) {
       const captionText = msg.caption || 'Make it look better and more high quality';
       const photoId = msg.photo[msg.photo.length - 1].file_id;
       try {
         const fileLink = await bot.getFileLink(photoId); 
-        await generateMedia(chatId, null, captionText, null, 'klein', fileLink); 
+        await generateMedia(chatId, null, captionText, null, 'klein', 'image', fileLink); 
       } catch (err) {
         bot.sendMessage(chatId, "❌ Ошибка получения картинки.");
       }
-      return;
     }
-
-    if (!userInput) return;
-
-    // ОБЫЧНАЯ ГЕНЕРАЦИЯ
-    userHistory.set(chatId, { originalPrompt: userInput });
-    
-    const modelKeyboard = {
-      inline_keyboard: [[
-        { text: '🌟 Z-Image Turbo', callback_data: 'model_zimage' },
-        { text: '⚡ Flux Schnell', callback_data: 'model_flux' },
-        { text: '💎 Flux Klein', callback_data: 'model_klein' }
-      ]]
-    };
-
-    await bot.sendMessage(chatId, `Отличная идея:\n"${userInput}"\n\nВыберите модель:`, {
-      reply_markup: JSON.stringify(modelKeyboard)
-    });
   });
 
   bot.on('callback_query', async (query) => {
@@ -639,7 +612,8 @@ function setupBotHandlers() {
       settings.activePromptId = promptId;
       userSettings.set(chatId, settings);
       
-      const userPrompts = savedPrompts[chatId] || savedPrompts.global;
+      const allPrompts = loadSavedPrompts();
+      const userPrompts = allPrompts[chatId] || allPrompts.global;
       const prompt = userPrompts.find(p => p.id === promptId);
       
       bot.answerCallbackQuery(query.id, { text: `Активен: ${prompt ? prompt.name : promptId}` });
@@ -666,12 +640,13 @@ function setupBotHandlers() {
       const promptId = data.replace('p_del_', '');
       if (promptId === 'default') return bot.answerCallbackQuery(query.id, { text: 'Нельзя удалить стандартный промпт', show_alert: true });
       
-      if (!savedPrompts[chatId]) {
-        savedPrompts[chatId] = [...(savedPrompts.global || DEFAULT_PROMPTS)];
+      const allPrompts = loadSavedPrompts();
+      if (!allPrompts[chatId]) {
+        allPrompts[chatId] = [...(allPrompts.global || DEFAULT_PROMPTS)];
       }
       
-      savedPrompts[chatId] = savedPrompts[chatId].filter(p => p.id !== promptId);
-      saveSavedPrompts(savedPrompts);
+      allPrompts[chatId] = allPrompts[chatId].filter(p => p.id !== promptId);
+      saveSavedPrompts(allPrompts);
       
       const settings = getSettings(chatId);
       if (settings.activePromptId === promptId) settings.activePromptId = 'default';
@@ -680,7 +655,7 @@ function setupBotHandlers() {
       bot.answerCallbackQuery(query.id, { text: 'Удалено' });
       
       // Обновляем список
-      const userPrompts = savedPrompts[chatId];
+      const userPrompts = allPrompts[chatId];
       let keyboard = [];
       userPrompts.forEach(p => {
         const isSelected = p.id === settings.activePromptId;
@@ -707,13 +682,49 @@ function setupBotHandlers() {
       return;
     }
 
-    // --- Original Handlers ---
+    if (data.startsWith('cat_')) {
+      const category = data.replace('cat_', '');
+      const history = userHistory.get(chatId);
+      const settings = getSettings(chatId);
+      const defaultModel = settings.defaults[category];
+      
+      bot.editMessageText(`Выбрана категория: <b>${category}</b>. Использую модель по умолчанию: <b>${defaultModel}</b>.`, {
+        chat_id: chatId, 
+        message_id: query.message.message_id, 
+        parse_mode: 'HTML'
+      });
+      
+      generateMedia(chatId, query.id, history.originalPrompt, null, defaultModel, category, null);
+      return;
+    }
+
+    if (data === 'action_image_to_video') {
+      const history = userHistory.get(chatId);
+      if (!history || !history.lastImageUrl) return bot.answerCallbackQuery(query.id, { text: 'Ошибка: картинка не найдена', show_alert: true });
+      
+      const settings = getSettings(chatId);
+      settings.state = 'waiting_for_video_prompt';
+      userSettings.set(chatId, settings);
+      
+      bot.sendMessage(chatId, "🎬 <b>Режим создания видео из картинки</b>\nОпишите, что должно произойти на видео (движение, эффекты):", { parse_mode: 'HTML' });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'action_regen') {
+      const history = userHistory.get(chatId);
+      if (!history) return bot.answerCallbackQuery(query.id, { text: 'Нет истории', show_alert: true });
+      generateMedia(chatId, query.id, history.originalPrompt, history.enhancedPrompt, history.modelId, history.category, history.lastImageUrl);
+      return;
+    }
+
+    // --- Settings Logic ---
     if (data === 'settings_ar') {
       const keyboard = {
         inline_keyboard: [
-          [{ text: '🔲 Квадрат (1024x1024)', callback_data: 'ar_1024x1024' }],
-          [{ text: '📱 Вертикальный (768x1024)', callback_data: 'ar_768x1024' }],
-          [{ text: '💻 Горизонтальный (1024x768)', callback_data: 'ar_1024x768' }],
+          [{ text: '🔲 1:1 (1024x1024)', callback_data: 'ar_1024x1024' }],
+          [{ text: '📱 3:4 (768x1024)', callback_data: 'ar_768x1024' }],
+          [{ text: '💻 4:3 (1024x768)', callback_data: 'ar_1024x768' }],
           [{ text: '🔙 Назад', callback_data: 'settings_back' }]
         ]
       };
@@ -722,18 +733,52 @@ function setupBotHandlers() {
       return;
     }
 
-    if (data === 'settings_llm') {
+    if (data === 'settings_llm' || data === 'settings_defaults') {
       const keyboard = {
         inline_keyboard: [
-          [{ text: '⚡ OpenAI Fast (Default)', callback_data: 'llm_openai-fast' }],
-          [{ text: '🧠 OpenAI Search', callback_data: 'llm_searchgpt' }],
-          [{ text: '💎 Mistral Large', callback_data: 'llm_mistral-large' }],
-          [{ text: '🌌 Qwen 72B', callback_data: 'llm_qwen' }],
+          [{ text: '💬 Default Text', callback_data: 'setdef_text' }],
+          [{ text: '🎨 Default Image', callback_data: 'setdef_image' }],
+          [{ text: '🎬 Default Video', callback_data: 'setdef_video' }],
+          [{ text: '🎵 Default Audio', callback_data: 'setdef_audio' }],
           [{ text: '🔙 Назад', callback_data: 'settings_back' }]
         ]
       };
-      bot.editMessageText('🤖 Выберите LLM модель для улучшения промптов:', { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard });
+      bot.editMessageText('⚙️ <b>Настройка моделей по умолчанию</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('setdef_')) {
+      const cat = data.replace('setdef_', '');
+      const models = MODELS[cat];
+      const keyboard = {
+        inline_keyboard: models.map(m => [{ text: m.name, callback_data: `save_def_${cat}_${m.id}` }])
+      };
+      keyboard.inline_keyboard.push([{ text: '🔙 Назад', callback_data: 'settings_defaults' }]);
+      bot.editMessageText(`Выберите модель по умолчанию для <b>${cat}</b>:`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('save_def_')) {
+      const parts = data.split('_');
+      const cat = parts[2];
+      const modelId = parts[3];
+      const settings = getSettings(chatId);
+      settings.defaults[cat] = modelId;
+      userSettings.set(chatId, settings);
+      bot.answerCallbackQuery(query.id, { text: `Сохранено: ${modelId}` });
+      // Go back to defaults menu
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '💬 Text model', callback_data: 'setdef_text' }],
+          [{ text: '🎨 Image model', callback_data: 'setdef_image' }],
+          [{ text: '🎬 Video model', callback_data: 'setdef_video' }],
+          [{ text: '🎵 Audio model', callback_data: 'setdef_audio' }],
+          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройка моделей по умолчанию</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       return;
     }
 
@@ -742,71 +787,11 @@ function setupBotHandlers() {
       const keyboard = {
         inline_keyboard: [
           [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
-          [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
+          [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
         ]
       };
-      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      bot.editMessageText('⚙️ <b>Настройки бота</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (data.startsWith('llm_')) {
-      const model = data.replace('llm_', '');
-      const settings = getSettings(chatId);
-      settings.llmModel = model;
-      userSettings.set(chatId, settings);
-      bot.answerCallbackQuery(query.id, { text: `Модель изменена на ${model}` });
-      
-      // Вернуться в главное меню настроек
-      const keyboard = {
-        inline_keyboard: [
-          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
-          [{ text: `🤖 LLM Модель: ${settings.llmModel}`, callback_data: 'settings_llm' }]
-        ]
-      };
-      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
-      return;
-    }
-
-    if (data.startsWith('ar_')) {
-      const ar = data.split('_')[1];
-      console.log(`⚙️ Смена формата (ChatID: ${chatId}) на: ${ar}`);
-      const settings = getSettings(chatId);
-      settings.aspectRatio = ar;
-      userSettings.set(chatId, settings);
-      bot.answerCallbackQuery(query.id, { text: `Формат: ${ar}` });
-      
-      const keyboard = {
-        inline_keyboard: [
-          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
-          [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
-        ]
-      };
-      bot.editMessageText('⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
-      return;
-    }
-  
-    if (data.startsWith('model_')) {
-      const modelId = data.substring('model_'.length);
-      const history = userHistory.get(chatId);
-      if (!history) return bot.answerCallbackQuery(query.id, { text: 'Сессия устарела', show_alert: true });
-      
-      bot.editMessageText(`Выбрана модель: <b>${modelId}</b>`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML' });
-      generateMedia(chatId, query.id, history.originalPrompt, null, modelId, null);
-      return;
-    }
-  
-    if (data === 'action_regen') {
-      const history = userHistory.get(chatId);
-      if (!history || !history.enhancedPrompt) return bot.answerCallbackQuery(query.id, { text: 'Нет истории для перегенерации', show_alert: true });
-      generateMedia(chatId, query.id, history.originalPrompt, history.enhancedPrompt, history.modelId, null);
-      return;
-    }
-  
-    if (data === 'action_video') {
-      const history = userHistory.get(chatId);
-      if (!history || !history.enhancedPrompt) return bot.answerCallbackQuery(query.id, { text: 'Нет истории', show_alert: true });
-      generateMedia(chatId, query.id, history.originalPrompt, history.enhancedPrompt, 'ltx-2', history.lastImageUrl);
       return;
     }
   });
