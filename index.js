@@ -82,6 +82,37 @@ const DEFAULT_PROMPTS = [
     id: 'photo', 
     name: '📸 Photorealistic', 
     text: 'Transform the user request into a ultra-realistic photographic prompt. Specify camera (Sony A7R IV), lens (85mm f/1.4), lighting (golden hour), and texture details. Output ONLY the improved English prompt: ' 
+  },
+  {
+    id: 'video-pro',
+    name: '🎬 Video Expert',
+    text: `You are an expert AI video prompt engineer. You receive a brief description of a desired video scene (in any language) and output a single, production-ready English video prompt.
+
+## OUTPUT FORMAT
+Return ONLY the final prompt text. No explanations, no labels, no markdown.
+
+## PROMPT STRUCTURE (always follow this order)
+1. SHOT TYPE & FRAMING: extreme close-up / close-up / medium / wide / establishing / POV / top-down / low angle / high angle / Dutch angle
+2. CAMERA MOVEMENT + SPEED: specify exact move (dolly, pan, tilt, track, orbit, boom, crane, whip pan, crash zoom, Steadicam float, handheld vérité, static) + speed (glacially slow / slow / moderate / fast / whip-speed) + direction
+3. SUBJECT + ACTION: who/what is in frame, what they are doing, body language, expression, clothing, key details
+4. ENVIRONMENT & SETTING: location, time of day, weather, production design details, background elements
+5. LIGHTING: key light direction, color temperature, contrast ratio, practical lights, motivated sources, shadows
+6. LENS & DEPTH OF FIELD: focal length (24mm wide / 35mm / 50mm / 85mm portrait / 135mm telephoto), aperture feel (shallow bokeh f/1.4 vs deep focus f/11), anamorphic or spherical
+7. STYLE & TEXTURE: film stock feel, grain, color grade, visual reference (decade, genre, director style — no real names)
+8. AUDIO DIRECTION: ambient sound, SFX, dialogue (with tone/emotion in parentheses), music presence or absence — always specify "no music" if unwanted
+9. QUALITY ANCHORS: always append — smooth, steady, cinematic, professional quality, no jitter, constant speed
+
+## RULES
+- Every prompt must be SELF-CONTAINED: no pronouns referencing other scenes, no "same as before"
+- Prompt length: 60–150 words. Dense but readable.
+- Default duration assumption: 5 seconds. If user specifies duration, adjust action density accordingly.
+- For TRANSITIONS (user mentions "from A to B" or "переход"): describe START state → transformation style → END state → camera behavior during transition
+- For DIALOGUE: write speech in natural sentence case, never ALL CAPS. Add tone: (whispered), (excited), (deadpan). Keep lines under 5 seconds of speech.
+- NEVER include: real celebrity names, copyrighted characters, brand names, slurs
+- If the scene is unclear or too vague, make bold creative choices — do NOT ask questions
+- Specify "no people visible" for empty environments, "no music, ambient only" when needed
+- Add physics/weight cues for realism: "heavy footsteps pressing into wet sand", "fabric billowing with real weight"
+- Prevent AI artifacts: add "maintains rigid shape" for objects, "no morphing" for faces, "constant lighting" to prevent flicker`
   }
 ];
 
@@ -754,14 +785,19 @@ function setupBotHandlers() {
 
     // --- Settings Logic ---
     if (data === 'settings_ar') {
+      const settings = getSettings(chatId);
+      const arList = [
+        { text: '🔲 1:1 (1024x1024)', id: '1024x1024' },
+        { text: '📱 3:4 (768x1024)', id: '768x1024' },
+        { text: '💻 4:3 (1024x768)', id: '1024x768' }
+      ];
       const keyboard = {
-        inline_keyboard: [
-          [{ text: '🔲 1:1 (1024x1024)', callback_data: 'ar_1024x1024' }],
-          [{ text: '📱 3:4 (768x1024)', callback_data: 'ar_768x1024' }],
-          [{ text: '💻 4:3 (1024x768)', callback_data: 'ar_1024x768' }],
-          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
-        ]
+        inline_keyboard: arList.map(ar => [{ 
+          text: `${settings.aspectRatio === ar.id ? '✅ ' : ''}${ar.text}`, 
+          callback_data: `ar_${ar.id}` 
+        }])
       };
+      keyboard.inline_keyboard.push([{ text: '🔙 Назад', callback_data: 'settings_back' }]);
       bot.editMessageText('📐 Выберите формат изображений:', { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
       return;
@@ -802,8 +838,14 @@ function setupBotHandlers() {
     if (data.startsWith('setdef_')) {
       const cat = data.replace('setdef_', '');
       const models = MODELS[cat];
+      const settings = getSettings(chatId);
+      const currentDef = settings.defaults[cat];
+      
       const keyboard = {
-        inline_keyboard: models.map(m => [{ text: m.name, callback_data: `save_def_${cat}_${m.id}` }])
+        inline_keyboard: models.map(m => [{ 
+          text: `${currentDef === m.id ? '✅ ' : ''}${m.name}`, 
+          callback_data: `save_def_${cat}_${m.id}` 
+        }])
       };
       keyboard.inline_keyboard.push([{ text: '🔙 Назад', callback_data: 'settings_defaults' }]);
       bot.editMessageText(`Выберите модель по умолчанию для <b>${cat}</b>:`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
@@ -847,13 +889,18 @@ function setupBotHandlers() {
     }
 
     if (data === 'settings_format') {
+      const settings = getSettings(chatId);
+      const formats = [
+        { text: 'WEBP (Fast/Modern)', id: 'webp' },
+        { text: 'JPG (Standard)', id: 'jpg' }
+      ];
       const keyboard = {
-        inline_keyboard: [
-          [{ text: 'WEBP (Fast/Modern)', callback_data: 'setformat_webp' }],
-          [{ text: 'JPG (Standard)', callback_data: 'setformat_jpg' }],
-          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
-        ]
+        inline_keyboard: formats.map(f => [{ 
+          text: `${settings.format === f.id ? '✅ ' : ''}${f.text}`, 
+          callback_data: `setformat_${f.id}` 
+        }])
       };
+      keyboard.inline_keyboard.push([{ text: '🔙 Назад', callback_data: 'settings_back' }]);
       bot.editMessageText('🖼 <b>Выберите формат файла</b>\n(WEBP рекомендуется для скорости):', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
       return;
@@ -879,14 +926,19 @@ function setupBotHandlers() {
     }
 
     if (data === 'settings_mode') {
+      const settings = getSettings(chatId);
+      const modes = [
+        { text: '❓ Всегда спрашивать', id: 'ask' },
+        { text: '🎨 Только Картинки', id: 'image' },
+        { text: '🎬 Только Видео', id: 'video' }
+      ];
       const keyboard = {
-        inline_keyboard: [
-          [{ text: '❓ Всегда спрашивать', callback_data: 'setmode_ask' }],
-          [{ text: '🎨 Только Картинки', callback_data: 'setmode_image' }],
-          [{ text: '🎬 Только Видео', callback_data: 'setmode_video' }],
-          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
-        ]
+        inline_keyboard: modes.map(m => [{ 
+          text: `${(settings.defaultMode || 'ask') === m.id ? '✅ ' : ''}${m.text}`, 
+          callback_data: `setmode_${m.id}` 
+        }])
       };
+      keyboard.inline_keyboard.push([{ text: '🔙 Назад', callback_data: 'settings_back' }]);
       bot.editMessageText('⚡️ <b>Режим быстрой генерации</b>\nВыберите, что делать сразу после ввода текста:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
       return;
