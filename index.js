@@ -390,22 +390,23 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
 
     let apiUrl = '';
     if (isAudio) {
+      if (modelId === 'elevenlabs') params.set('voice', 'nova');
       apiUrl = `https://gen.pollinations.ai/audio/${encodeURIComponent(originalPrompt)}?${params.toString()}`;
-      if (modelId === 'elevenlabs') params.set('voice', 'nova'); // Default voice
-    } else {
+    } else if (isVideo) {
+      params.set('duration', '5');
+      const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
+      params.set('aspectRatio', parseInt(w) > parseInt(h) ? '16:9' : '9:16');
+      if (referenceImageUrl) params.set('image', referenceImageUrl);
       params.set('seed', '-1');
       params.set('nologo', 'true');
+      apiUrl = `https://gen.pollinations.ai/video/${encodeURIComponent(enhancedPrompt)}?${params.toString()}`;
+    } else {
+      const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
+      params.set('width', w);
+      params.set('height', h);
       if (referenceImageUrl) params.set('image', referenceImageUrl);
-      
-      if (isVideo) {
-        params.set('duration', '5');
-        const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
-        params.set('aspectRatio', parseInt(w) > parseInt(h) ? '16:9' : '9:16');
-      } else {
-        const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
-        params.set('width', w);
-        params.set('height', h);
-      }
+      params.set('seed', '-1');
+      params.set('nologo', 'true');
       apiUrl = `https://gen.pollinations.ai/image/${encodeURIComponent(enhancedPrompt)}?${params.toString()}`;
     }
 
@@ -438,12 +439,18 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
 
     const sendOps = { caption, parse_mode: 'HTML', reply_markup: JSON.stringify(actionKeyboard) };
 
+    // Сохраняем историю для возможности перегенерации
+    userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId, category, referenceImageUrl });
+
     if (isAudio) {
       await bot.sendAudio(chatId, buffer, { caption, ...sendOps }, { filename: 'audio.mp3', contentType: 'audio/mpeg' });
     } else if (isVideo) {
       await bot.sendVideo(chatId, buffer, sendOps, { filename: 'video.mp4', contentType: 'video/mp4' });
     } else {
-      userHistory.set(chatId, { originalPrompt, enhancedPrompt, modelId, category, lastImageUrl: apiUrl });
+      // Имена параметров для Image-to-Video: сохраняем URL картинки
+      const history = userHistory.get(chatId);
+      history.lastImageUrl = apiUrl;
+      userHistory.set(chatId, history);
       await bot.sendPhoto(chatId, buffer, sendOps);
     }
 
@@ -528,7 +535,7 @@ function setupBotHandlers() {
     const keyboard = {
       inline_keyboard: [
         [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
-        [{ text: `🤖 LLM Модель: ${settings.llmModel || 'openai-fast'}`, callback_data: 'settings_llm' }]
+        [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
       ]
     };
     bot.sendMessage(chatId, '⚙️ <b>Настройки бота</b>\nВыберите параметр для изменения:', { parse_mode: 'HTML', reply_markup: JSON.stringify(keyboard) });
@@ -730,6 +737,23 @@ function setupBotHandlers() {
       };
       bot.editMessageText('📐 Выберите формат изображений:', { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard });
       bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('ar_')) {
+      const aspectRatio = data.replace('ar_', '');
+      const settings = getSettings(chatId);
+      settings.aspectRatio = aspectRatio;
+      userSettings.set(chatId, settings);
+      bot.answerCallbackQuery(query.id, { text: `Сохранен формат: ${aspectRatio}` });
+      
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
       return;
     }
 
