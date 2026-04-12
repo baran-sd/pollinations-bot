@@ -276,12 +276,13 @@ const MODELS = {
     { id: 'polly', name: 'Polly Assistant' }
   ],
   image: [
-    { id: 'flux', name: 'Flux Schnell' },
+    { id: 'flux', name: 'Flux.1 Schnell' },
+    { id: 'flux-realism', name: 'Flux Realism' },
+    { id: 'flux-anime', name: 'Flux Anime' },
+    { id: 'flux-3d', name: 'Flux 3D' },
+    { id: 'flux-pro', name: 'Flux.1 Pro (Key Required)' },
+    { id: 'any-dark', name: 'Any Dark' },
     { id: 'zimage', name: 'Z-Image Turbo' },
-    { id: 'kontext', name: 'Flux Kontext' },
-    { id: 'gptimage', name: 'GPT Image 1 Mini' },
-    { id: 'wan-image', name: 'Wan 2.7 Image' },
-    { id: 'qwen-image', name: 'Qwen Image Plus' },
     { id: 'klein', name: 'Flux Klein' }
   ],
   video: [
@@ -302,6 +303,8 @@ function getSettings(chatId) {
     settings = { 
       aspectRatio: '1024x1024',
       activePromptId: 'cadavre',
+      format: 'webp',
+      defaultMode: 'ask',
       defaults: {
         text: 'openai-fast',
         image: 'flux',
@@ -399,6 +402,7 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       if (referenceImageUrl) params.set('image', referenceImageUrl);
       params.set('seed', '-1');
       params.set('nologo', 'true');
+      if (pollinationsKey) params.set('private', 'true'); // Hide from public gallery
       apiUrl = `https://gen.pollinations.ai/video/${encodeURIComponent(enhancedPrompt)}?${params.toString()}`;
     } else {
       const [w, h] = (settings.aspectRatio || '1024x1024').split('x');
@@ -407,6 +411,8 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
       if (referenceImageUrl) params.set('image', referenceImageUrl);
       params.set('seed', '-1');
       params.set('nologo', 'true');
+      params.set('format', settings.format || 'webp');
+      if (pollinationsKey) params.set('private', 'true'); // Hide from public gallery
       apiUrl = `https://gen.pollinations.ai/image/${encodeURIComponent(enhancedPrompt)}?${params.toString()}`;
     }
 
@@ -547,6 +553,8 @@ function setupBotHandlers() {
     const keyboard = {
       inline_keyboard: [
         [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+        [{ text: `🖼 Тип файла: ${settings.format || 'webp'}`, callback_data: 'settings_format' }],
+        [{ text: `⚡️ Режим: ${settings.defaultMode || 'ask'}`, callback_data: 'settings_mode' }],
         [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
       ]
     };
@@ -592,6 +600,13 @@ function setupBotHandlers() {
     if (userInput) {
       console.log(`📩 Prompt from @${msg.from.username || 'unknown'}: "${userInput}"`);
       userHistory.set(chatId, { originalPrompt: userInput });
+
+      // Если установлен режим по умолчанию (не "ask"), запускаем генерацию сразу
+      if (settings.defaultMode && settings.defaultMode !== 'ask') {
+        const category = settings.defaultMode;
+        const modelId = settings.defaults[category];
+        return generateMedia(chatId, null, userInput, null, modelId, category, null);
+      }
 
       const categoryKeyboard = {
         inline_keyboard: [[
@@ -830,6 +845,72 @@ function setupBotHandlers() {
       bot.answerCallbackQuery(query.id);
       return;
     }
+
+    if (data === 'settings_format') {
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: 'WEBP (Fast/Modern)', callback_data: 'setformat_webp' }],
+          [{ text: 'JPG (Standard)', callback_data: 'setformat_jpg' }],
+          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
+        ]
+      };
+      bot.editMessageText('🖼 <b>Выберите формат файла</b>\n(WEBP рекомендуется для скорости):', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('setformat_')) {
+      const format = data.replace('setformat_', '');
+      const settings = getSettings(chatId);
+      settings.format = format;
+      userSettings.set(chatId, settings);
+      bot.answerCallbackQuery(query.id, { text: `Формат: ${format}` });
+      // Go back
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🖼 Тип файла: ${settings.format || 'webp'}`, callback_data: 'settings_format' }],
+          [{ text: `⚡️ Режим: ${settings.defaultMode || 'ask'}`, callback_data: 'settings_mode' }],
+          [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      return;
+    }
+
+    if (data === 'settings_mode') {
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '❓ Всегда спрашивать', callback_data: 'setmode_ask' }],
+          [{ text: '🎨 Только Картинки', callback_data: 'setmode_image' }],
+          [{ text: '🎬 Только Видео', callback_data: 'setmode_video' }],
+          [{ text: '🔙 Назад', callback_data: 'settings_back' }]
+        ]
+      };
+      bot.editMessageText('⚡️ <b>Режим быстрой генерации</b>\nВыберите, что делать сразу после ввода текста:', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data.startsWith('setmode_')) {
+      const mode = data.replace('setmode_', '');
+      const settings = getSettings(chatId);
+      settings.defaultMode = mode;
+      userSettings.set(chatId, settings);
+      bot.answerCallbackQuery(query.id, { text: `Режим: ${mode}` });
+      // Go back
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: `📐 Формат: ${settings.aspectRatio}`, callback_data: 'settings_ar' }],
+          [{ text: `🖼 Тип файла: ${settings.format || 'webp'}`, callback_data: 'settings_format' }],
+          [{ text: `⚡️ Режим: ${settings.defaultMode || 'ask'}`, callback_data: 'settings_mode' }],
+          [{ text: `🤖 Модели по-умолчанию`, callback_data: 'settings_defaults' }]
+        ]
+      };
+      bot.editMessageText('⚙️ <b>Настройки бота</b>', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: keyboard });
+      return;
+    }
+
   });
 }
 
