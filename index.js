@@ -447,11 +447,23 @@ async function generateMedia(chatId, callbackQueryId, originalPrompt, preEnhance
     } else if (isVideo) {
       await bot.sendVideo(chatId, buffer, sendOps, { filename: 'video.mp4', contentType: 'video/mp4' });
     } else {
-      // Имена параметров для Image-to-Video: сохраняем URL картинки
+      // Отправляем фото и получаем статичную ссылку для Image-to-Video
+      const sentMsg = await bot.sendPhoto(chatId, buffer, sendOps);
+      
       const history = userHistory.get(chatId);
-      history.lastImageUrl = apiUrl;
+      if (sentMsg.photo && sentMsg.photo.length > 0) {
+        const photoId = sentMsg.photo[sentMsg.photo.length - 1].file_id;
+        try {
+          const fileLink = await bot.getFileLink(photoId);
+          history.lastImageUrl = fileLink;
+        } catch (e) {
+          console.error("Ошибка при получении file_link:", e.message);
+          history.lastImageUrl = apiUrl; // Fallback
+        }
+      } else {
+        history.lastImageUrl = apiUrl;
+      }
       userHistory.set(chatId, history);
-      await bot.sendPhoto(chatId, buffer, sendOps);
     }
 
   } catch (error) {
