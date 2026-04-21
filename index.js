@@ -11,6 +11,32 @@ const HF_DATA_DIR = '/data';
 const PROMPTS_FILE = (fs.existsSync(HF_DATA_DIR) ? path.join(HF_DATA_DIR, 'prompts.json') : path.join(__dirname, 'prompts.json'));
 console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
+let airtablePromptsCache = [];
+
+async function syncAirtable() {
+  const token = process.env.AIRTABLE_PERSONAL_ACCESS_TOKEN;
+  const baseId = process.env.AIRTABLE_BASE_ID;
+  const tableName = process.env.AIRTABLE_TABLE_NAME || 'Prompts';
+  if (!token || !baseId) return;
+
+  try {
+    const url = `https://api.airtable.com/v0/${baseId}/${tableName}`;
+    const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    
+    if (response.data && response.data.records) {
+      airtablePromptsCache = response.data.records.map(r => ({
+        id: `at_${r.id}`,
+        name: `☁️ ${r.fields.Name || 'Unnamed'}`,
+        text: r.fields.SystemPrompt || ''
+      })).filter(p => p.text);
+      console.log(`✅ Airtable synced: ${airtablePromptsCache.length} prompts loaded.`);
+    }
+  } catch (err) {
+    console.error('❌ Airtable Sync Error:', err.message);
+  }
+}
+setInterval(syncAirtable, 5 * 60 * 1000);
+
 const CADAVRE_PROMPT = `## ROLE
 You are Cadavre Exquis Prompt Generator. Create prompts for AI image generation in the "Exquisite Corpse" style — surreal portraits where the character's body is divided into 3-5 style zones, seamlessly flowing into each other like a gradient.
 
@@ -116,21 +142,35 @@ Return ONLY the final prompt text. No explanations, no labels, no markdown.
   }
 ];
 
+function getGlobalPrompts() {
+  if (airtablePromptsCache.length > 0) {
+    return [...DEFAULT_PROMPTS, ...airtablePromptsCache];
+  }
+  return DEFAULT_PROMPTS;
+}
+
 function loadSavedPrompts() {
   try {
     if (fs.existsSync(PROMPTS_FILE)) {
       const data = fs.readFileSync(PROMPTS_FILE, 'utf8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (parsed.global) parsed.global = getGlobalPrompts();
+      return parsed;
     }
   } catch (err) {
     console.error('Error loading prompts:', err);
   }
-  return { global: DEFAULT_PROMPTS };
+  return { global: getGlobalPrompts() };
 }
 
 function saveSavedPrompts(prompts) {
   try {
-    fs.writeFileSync(PROMPTS_FILE, JSON.stringify(prompts, null, 2));
+    // Не сохраняем облачные промпты в локальный файл
+    const promptsToSave = JSON.parse(JSON.stringify(prompts));
+    for (const key in promptsToSave) {
+      promptsToSave[key] = promptsToSave[key].filter(p => !p.id.startsWith('at_'));
+    }
+    fs.writeFileSync(PROMPTS_FILE, JSON.stringify(promptsToSave, null, 2));
   } catch (err) {
     console.error('Error saving prompts:', err);
   }
@@ -276,6 +316,7 @@ async function initializeBot() {
 }
 
 initializeBot();
+setTimeout(syncAirtable, 3000); // Запуск Airtable парсера после старта
 
 
 // Escape HTML special characters to prevent Telegram parse errors
@@ -520,8 +561,18 @@ function setupBotHandlers() {
 ✅ Работает (online)
 🕒 Аптайм: ${uptime} сек.
 📡 Сборка: ${process.env.NODE_ENV || 'development'}
-📍 Инстанс: ${process.env.HOSTNAME || 'Local/HF-Space'}`;
+📍 Инстанс: ${process.env.HOSTNAME || 'Local/HF-Space'}
+☁️ Airtable Промптов: ${airtablePromptsCache.length}`;
     bot.sendMessage(chatId, statusInfo, { parse_mode: 'HTML' });
+  });
+
+  bot.onText(/\/sync/, async (msg) => {
+    if (!process.env.AIRTABLE_PERSONAL_ACCESS_TOKEN) {
+      return bot.sendMessage(msg.chat.id, "❌ Ошибка: В настройках не указан токен Airtable (`AIRTABLE_PERSONAL_ACCESS_TOKEN`)", { parse_mode: 'Markdown' });
+    }
+    bot.sendMessage(msg.chat.id, "🔄 Синхронизирую с Airtable...");
+    await syncAirtable();
+    bot.sendMessage(msg.chat.id, `✅ Успешно! Загружено ${airtablePromptsCache.length} промптов из облака.`);
   });
 
   bot.onText(/\/start/, (msg) => {
@@ -608,7 +659,7 @@ function setupBotHandlers() {
     if (settings.state === 'waiting_for_new_prompt_text' && userInput && !userInput.startsWith('/')) {
       const newPrompt = { id: 'p_' + Date.now(), name: settings.tempNewPromptName, text: userInput };
       const allPrompts = loadSavedPrompts();
-      if (!allPrompts[chatId]) allPrompts[chatId] = [...(allPrompts.global || DEFAULT_PROMPTS)];
+      if (!allPrompts[chatId]) allPrompts[chatId] = [...(allPrompts.global || getGlobalPrompts())];
       allPrompts[chatId].push(newPrompt);
       saveSavedPrompts(allPrompts);
       settings.state = null;
@@ -704,10 +755,11 @@ function setupBotHandlers() {
     if (data.startsWith('p_del_')) {
       const promptId = data.replace('p_del_', '');
       if (promptId === 'default') return bot.answerCallbackQuery(query.id, { text: 'Нельзя удалить стандартный промпт', show_alert: true });
+      if (promptId.startsWith('at_')) return bot.answerCallbackQuery(query.id, { text: 'Этот промпт управляется через Airtable', show_alert: true });
       
       const allPrompts = loadSavedPrompts();
       if (!allPrompts[chatId]) {
-        allPrompts[chatId] = [...(allPrompts.global || DEFAULT_PROMPTS)];
+        allPrompts[chatId] = [...(allPrompts.global || getGlobalPrompts())];
       }
       
       allPrompts[chatId] = allPrompts[chatId].filter(p => p.id !== promptId);
