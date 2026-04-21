@@ -1074,6 +1074,9 @@ app.get('/', (req, res) => {
     </div>
   `;
 
+  const manualDirectUrl = `https://api.telegram.org/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
+  const displayToken = token ? `${token.split(':')[0]}:***` : 'None';
+
   if (botError) {
     res.status(500).send(`
       <div style="font-family: sans-serif; padding: 30px; line-height: 1.6; max-width: 800px; margin: auto;">
@@ -1083,20 +1086,20 @@ app.get('/', (req, res) => {
             <strong>Текущая ошибка:</strong> ${botError}
         </div>
         ${diagHtml}
-        <div style="text-align: center; margin: 20px 0;">
-            <a href="${manualWebhookUrl}" target="_blank" style="background: #e67e22; color: white; padding: 12px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">⚙️ Настроить Webhook вручную</a>
-            <p style="font-size: 0.8em; color: #7f8c8d; margin-top: 10px;">(Откроется в новой вкладке. Если не нажимается — скопируйте ссылку ниже):</p>
-            <input type="text" value="${manualWebhookUrl}" readonly style="width: 100%; padding: 5px; font-size: 0.7em; background: #eee; border: 1px solid #ccc; border-radius: 3px;">
+        <div style="background: #fcf8f3; border: 1px solid #faebcc; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <b>Варианты настройки (нажмите один):</b><br><br>
+            <a href="${manualWebhookUrl}" target="_blank" style="background: #e67e22; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block; margin-bottom: 10px;">1. Через выбранное зеркало</a><br>
+            <a href="${manualDirectUrl}" target="_blank" style="background: #34495e; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">2. Напрямую (через api.telegram.org)</a>
+            <p style="font-size: 0.8em; color: #7f8c8d; margin-top: 10px;">Если при нажатии ничего не происходит — проверьте, что ссылка ниже содержит верный URL Webhook:</p>
+            <code style="word-break: break-all; background: #eee; padding: 5px; display: block; margin-top: 5px;">${webhookUrl}</code>
+        </div>
+        <div style="font-size: 0.85em; color: #666; background: #f9f9f9; padding: 10px; border: 1px solid #ddd;">
+            <b>Техническая инфо:</b><br>
+            Token: ${displayToken}<br>
+            Webhook: ${webhookUrl || 'Not detected'}<br>
+            Host: ${process.env.HOSTNAME || 'Local'}
         </div>
         ${historyHtml}
-        <hr>
-        <h3>🛠 Что делать?</h3>
-        <ol>
-            <li>Если ошибка <b>"ENOTFOUND"</b> или <b>"EFATAL"</b> в <b>Private Space</b> — это значит, что Space не может «увидеть» интернет. Попробуйте перезапустить Space (Restart) или проверьте, не включены ли в настройках HF ограничения Egress.</li>
-            <li>Убедитесь, что <code>TELEGRAM_BOT_TOKEN</code> в настройках верный.</li>
-            <li>Если ошибка <b>"Conflict 409"</b> — выключите бота на компьютере.</li>
-        </ol>
-        <p style="color: #666; font-size: 0.9em; margin-top: 20px;">Instance: ${process.env.HOSTNAME || 'Local'}</p>
       </div>
     `);
   } else {
