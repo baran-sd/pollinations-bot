@@ -317,16 +317,24 @@ async function initializeBot() {
     setupBotHandlers();
   }
 
-  if (activeMirror !== null || !webhookUrl) {
+  const connectionFound = activeMirror !== undefined && activeMirror !== 'failed'; // We set activeMirror = null for direct, or a string for mirror
+
+  if (activeMirror !== undefined || !webhookUrl) {
     networkStatus = `Webhook: Active | Mirror: ${activeMirror || 'Direct'}`;
     botError = null;
     try {
       const resp = await performHandshake(token, activeMirror);
       botUserName = resp.data.result.username;
-    } catch(e) {}
+    } catch(e) {
+      // If even the chosen mirror fails secondary handshake
+      if (activeMirror === null) {
+         networkStatus = "Webhook: Требуется ручная настройка";
+         botError = "Исходящие запросы Direct заблокированы. Пожалуйста, выберите зеркало или укажите CUSTOM_TG_MIRROR.";
+      }
+    }
   } else {
     networkStatus = "Webhook: Требуется ручная настройка";
-    botError = "Исходящие запросы заблокированы. Используйте кнопку 'Настроить Webhook' ниже.";
+    botError = "Исходящие запросы заблокированы. Пожалуйста, укажите рабочее зеркало в CUSTOM_TG_MIRROR или используйте кнопку ниже.";
   }
 }
 
