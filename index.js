@@ -15,39 +15,40 @@ let airtablePromptsCache = [];
 let lastUpdateId = 0;
 let isPolling = false;
 
-async function startAxiosPolling(bot, token) {
+async function startAxiosPolling(bot, token, baseConfig = {}) {
   if (isPolling) return;
   isPolling = true;
   console.log("🚀 Custom Axios Polling Started...");
 
+  // Use the connection options that succeeded in the handshake
+  const pollingOptions = {
+    ...baseConfig,
+    params: {
+      offset: lastUpdateId + 1,
+      timeout: 30, // Long polling
+      allowed_updates: ["message", "callback_query"]
+    },
+    // Polling timeout should be slightly longer than Telegram's response timeout (30s)
+    timeout: (baseConfig.timeout || 45000) > 35000 ? baseConfig.timeout || 45000 : 45000 
+  };
+
   while (isPolling) {
     try {
-      const response = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, {
-        params: {
-          offset: lastUpdateId + 1,
-          timeout: 30, // Long polling
-          allowed_updates: ["message", "callback_query"]
-        },
-        timeout: 40000 // Slightly longer than TG timeout
-      });
-
+      const response = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, pollingOptions);
+      
       if (response.data && response.data.ok) {
         const updates = response.data.result;
         for (const update of updates) {
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
-          // Process update via the bot's internal engine
           bot.processUpdate(update);
         }
       }
     } catch (err) {
-      // Don't log normal timeout errors
       if (err.code !== 'ECONNABORTED' && !err.message.includes('timeout')) {
         console.error(`[Axios Polling Error] ${err.message}`);
-        // If it's a real network error, wait a bit longer
         await new Promise(r => setTimeout(r, 5000));
       }
     }
-    // Small pause to prevent tight loops in case of empty ok response
     await new Promise(r => setTimeout(r, 100));
   }
 }
@@ -231,17 +232,43 @@ function saveSavedPrompts(prompts) {
 }
 
 
-// БЛОК ОБХОДА DNS БЛОКИРОВКИ (ОТКЛЮЧЕНО, ТАК КАК AIRTABLE РАБОТАЕТ)
-// const originalLookup = dns.lookup;
-// ...
+// Competitive DNS/Connection Probe
+async function competitiveHandshake(token) {
+  const url = `https://api.telegram.org/bot${token}/getMe`;
+  
+  const strategies = [
+    { name: "Standard", config: { timeout: 15000 } },
+    { name: "IPv4 Forced", config: { timeout: 15000, family: 4 } },
+    { name: "Browser UA", config: { 
+        timeout: 15000, 
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' } 
+    } },
+    { name: "IPv4 + Browser UA", config: { 
+        timeout: 15000, 
+        family: 4,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' } 
+    } }
+  ];
 
-// DNS settings - only use if specified, otherwise rely on environment
-if (process.env.USE_GOOGLE_DNS === 'true') {
+  console.log(`📡 Starting competitive handshake (tried ${strategies.length} strategies)...`);
+
+  const promises = strategies.map(s => 
+    axios.get(url, s.config)
+      .then(res => {
+        console.log(`✅ Strategy "${s.name}" succeeded!`);
+        return { strategy: s.name, response: res, config: s.config };
+      })
+      .catch(err => {
+        console.log(`❌ Strategy "${s.name}" failed: ${err.message}`);
+        throw err;
+      })
+  );
+
   try {
-    dns.setServers(['8.8.8.8', '8.8.4.4']);
-    console.log("🛠 Using Google DNS (8.8.8.8)");
-  } catch (e) {
-    console.warn("⚠️ Could not set custom DNS:", e.message);
+    // Wait for the first successful strategy
+    return await Promise.any(promises);
+  } catch (err) {
+    throw new Error("All connection strategies failed.");
   }
 }
 
@@ -342,31 +369,23 @@ async function initializeBot() {
         });
       }
 
-      // Verify bot token and get info via Axios instead of the library's getMe
-      // This bypasses the TLS issues in the library's internal client
-      let response;
+      // Verify bot token via competitive handshake
+      let winner;
       try {
-        console.log(`🔍 Handshake start (timeout 60s)...`);
-        response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
-          timeout: 60000 
-        });
-      } catch (axiosErr) {
-        throw new Error(`handshake failed: ${axiosErr.message}`);
+        winner = await competitiveHandshake(token);
+      } catch (err) {
+        throw new Error(`All handshake attempts failed: ${err.message}`);
       }
 
-      if (!response.data || !response.data.ok) {
-        throw new Error(`handshake failed: ${response.data?.description || 'unknown error'}`);
-      }
-
-      const user = response.data.result;
+      const user = winner.response.data.result;
       botUserName = user.username;
       botError = null;
-      console.log(`✅ Бот @${botUserName} успешно авторизован (Handshake OK).`);
+      console.log(`✅ Бот @${botUserName} успешно авторизован (Handshake OK). Сценарий: ${winner.strategy}`);
       
       setupBotHandlers(); // Установка обработчиков сообщений
       
-      // Start our custom high-resilience polling
-      startAxiosPolling(bot, token);
+      // Start our custom high-resilience polling with the winning strategy settings
+      startAxiosPolling(bot, token, winner.config);
       
       return; 
 
