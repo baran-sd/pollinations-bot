@@ -359,7 +359,7 @@ async function initializeBot() {
       try {
         response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
           httpsAgent: new (require('https')).Agent({ keepAlive: true, family: 4 }),
-          timeout: 10000
+          timeout: 30000 // Increased timeout for stability
         });
       } catch (axiosErr) {
         throw new Error(`handshake failed: ${axiosErr.message}`);
