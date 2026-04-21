@@ -34,9 +34,9 @@ async function startAxiosPolling(bot, token, baseConfig = {}) {
 
   while (isPolling) {
     try {
-      const requestUrl = baseConfig && baseConfig.isDirect 
-        ? `https://149.154.167.220/bot${token}/getUpdates` 
-        : `https://api.telegram.org/bot${token}/getUpdates`;
+      let requestUrl = `https://api.telegram.org/bot${token}/getUpdates`;
+      if (baseConfig && baseConfig.isDirect) requestUrl = `https://149.154.167.220/bot${token}/getUpdates`;
+      if (baseConfig && baseConfig.isMirror) requestUrl = `${baseConfig.baseUrl}/bot${token}/getUpdates`;
         
       const response = await axios.get(requestUrl, pollingOptions);
       
@@ -251,17 +251,29 @@ async function competitiveHandshake(token) {
         timeout: 45000, 
         httpsAgent: new (require('https')).Agent({ servername: 'api.telegram.org' }),
         headers: { 'Host': 'api.telegram.org' }
-    }, isDirect: true }
+    }, isDirect: true },
+    { name: "Mirror: TGProxy.org", config: { timeout: 45000 }, isMirror: true, baseUrl: "https://tgproxy.org" },
+    { name: "Mirror: Telegram-Proxy.com", config: { timeout: 45000 }, isMirror: true, baseUrl: "https://api.telegram-proxy.com" }
   ];
 
   console.log(`📡 Starting competitive handshake (timeout: 45s, strategies: ${strategies.length})...`);
 
   const promises = strategies.map(s => {
-    const requestUrl = s.isDirect ? `https://149.154.167.220/bot${token}/getMe` : url;
+    let requestUrl = url;
+    if (s.isDirect) requestUrl = `https://149.154.167.220/bot${token}/getMe`;
+    if (s.isMirror) requestUrl = `${s.baseUrl}/bot${token}/getMe`;
+
     return axios.get(requestUrl, s.config)
       .then(res => {
         console.log(`✅ Strategy "${s.name}" succeeded!`);
-        return { strategy: s.name, response: res, config: s.config, isDirect: s.isDirect };
+        return { 
+          strategy: s.name, 
+          response: res, 
+          config: s.config, 
+          isDirect: s.isDirect,
+          isMirror: s.isMirror,
+          baseUrl: s.baseUrl 
+        };
       })
       .catch(err => {
         console.log(`❌ Strategy "${s.name}" failed: ${err.message}`);
