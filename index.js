@@ -20,10 +20,10 @@ async function syncAirtable() {
   let baseId = (process.env.AIRTABLE_BASE_ID || '').trim();
   let tableName = (process.env.AIRTABLE_TABLE_NAME || 'Prompts').trim();
   
-  // Clean URL if user pasted the entire URL instead of the ID
-  if (baseId.includes('airtable.com')) {
-    const match = baseId.match(/(app[a-zA-Z0-9]+)/);
-    if (match) baseId = match[1];
+  // Extract only the Base ID (app...) in case user pasted a full URL or appended the Table ID (tbl...)
+  const match = baseId.match(/(app[a-zA-Z0-9]+)/);
+  if (match) {
+    baseId = match[1];
   }
 
   if (!token_key || !baseId) return;
