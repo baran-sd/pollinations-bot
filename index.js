@@ -29,7 +29,7 @@ async function startAxiosPolling(bot, token) {
           allowed_updates: ["message", "callback_query"]
         },
         timeout: 40000, // Slightly longer than TG timeout
-        httpsAgent: new (require('https')).Agent({ keepAlive: true, family: 4 })
+        family: 4 // Use direct family setting
       });
 
       if (response.data && response.data.ok) {
@@ -357,9 +357,10 @@ async function initializeBot() {
       // This bypasses the TLS issues in the library's internal client
       let response;
       try {
+        console.log(`🔍 Handshake start (timeout 60s, family 4)...`);
         response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
-          httpsAgent: new (require('https')).Agent({ keepAlive: true, family: 4 }),
-          timeout: 30000 // Increased timeout for stability
+          family: 4, // Use direct family setting as in the successful test script
+          timeout: 60000 
         });
       } catch (axiosErr) {
         throw new Error(`handshake failed: ${axiosErr.message}`);
