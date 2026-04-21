@@ -1154,4 +1154,9 @@ app.get('/', (req, res) => {
     `);
   }
 });
-app.listen(process.env.PORT || 7860, '0.0.0.0', () => console.log('Облачный сервер запущен на 7860'));
+app.listen(process.env.PORT || 7860, '0.0.0.0', () => {
+    console.log('Облачный сервер запущен на 7860');
+    // Start bot logic
+    syncAirtable();
+    initializeBot();
+});
