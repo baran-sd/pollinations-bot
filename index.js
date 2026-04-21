@@ -20,7 +20,7 @@ async function syncAirtable() {
   if (!token || !baseId) return;
 
   try {
-    const url = `https://api.airtable.com/v0/${baseId}/${tableName}`;
+    const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`;
     const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` } });
     
     if (response.data && response.data.records) {
