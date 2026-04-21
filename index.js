@@ -12,6 +12,46 @@ const PROMPTS_FILE = (fs.existsSync(HF_DATA_DIR) ? path.join(HF_DATA_DIR, 'promp
 console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
 let airtablePromptsCache = [];
+let lastUpdateId = 0;
+let isPolling = false;
+
+async function startAxiosPolling(bot, token) {
+  if (isPolling) return;
+  isPolling = true;
+  console.log("🚀 Custom Axios Polling Started...");
+
+  while (isPolling) {
+    try {
+      const response = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, {
+        params: {
+          offset: lastUpdateId + 1,
+          timeout: 30, // Long polling
+          allowed_updates: ["message", "callback_query"]
+        },
+        timeout: 40000, // Slightly longer than TG timeout
+        httpsAgent: new (require('https')).Agent({ keepAlive: true, family: 4 })
+      });
+
+      if (response.data && response.data.ok) {
+        const updates = response.data.result;
+        for (const update of updates) {
+          lastUpdateId = Math.max(lastUpdateId, update.update_id);
+          // Process update via the bot's internal engine
+          bot.processUpdate(update);
+        }
+      }
+    } catch (err) {
+      // Don't log normal timeout errors
+      if (err.code !== 'ECONNABORTED' && !err.message.includes('timeout')) {
+        console.error(`[Axios Polling Error] ${err.message}`);
+        // If it's a real network error, wait a bit longer
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    // Small pause to prevent tight loops in case of empty ok response
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
 
 
 
@@ -206,12 +246,14 @@ function saveSavedPrompts(prompts) {
 //   return originalLookup(hostname, options, callback);
 // };
 
-// Принудительно устанавливаем Google DNS для обхода проблем в Private Space
-try {
-  dns.setServers(['8.8.8.8', '8.8.4.4']);
-  console.log("Установлены сторонние DNS (8.8.8.8)");
-} catch (e) {
-  console.error("Не удалось сменить DNS сервера:", e.message);
+// DNS settings - only use if specified, otherwise rely on environment
+if (process.env.USE_GOOGLE_DNS === 'true') {
+  try {
+    dns.setServers(['8.8.8.8', '8.8.4.4']);
+    console.log("🛠 Using Google DNS (8.8.8.8)");
+  } catch (e) {
+    console.warn("⚠️ Could not set custom DNS:", e.message);
+  }
 }
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -294,15 +336,20 @@ async function initializeBot() {
     try {
       console.log(`[${timestamp}] Попытка подключения #${attempts}...`);
       
-      // Инициализируем бота только один раз
       if (!bot) {
-        bot = new TelegramBot(token, { polling: true });
-        // Вешаем слушатели ошибок один раз
-        bot.on('polling_error', (error) => {
-          console.error(`[Polling Error] ${error.code}: ${error.message}`);
-          if (error.message.includes('409 Conflict')) {
-            botError = "Конфликт: Бот запущен в другом месте. Выключите локального бота!";
+        bot = new TelegramBot(token, { 
+          polling: false, // Disable native polling completely
+          request: {
+            agentOptions: {
+              keepAlive: true,
+              family: 4
+            }
           }
+        });
+
+        // We can still keep the error handler for other request errors
+        bot.on('error', (error) => {
+          console.error(`[Bot Error] ${error.message}`);
         });
       }
 
@@ -310,7 +357,12 @@ async function initializeBot() {
       botUserName = user.username;
       botError = null;
       console.log(`✅ Бот @${botUserName} успешно авторизован.`);
+      
       setupBotHandlers(); // Установка обработчиков сообщений
+      
+      // Start our custom high-resilience polling
+      startAxiosPolling(bot, token);
+      
       return; 
 
     } catch (err) {
