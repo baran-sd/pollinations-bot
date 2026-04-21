@@ -233,18 +233,18 @@ function saveSavedPrompts(prompts) {
 
 
 // БЛОК ОБХОДА DNS БЛОКИРОВКИ ДЛЯ API.TELEGRAM.ORG
-// const originalLookup = dns.lookup;
-// dns.lookup = (hostname, options, callback) => {
-//   if (typeof options === 'function') {
-//     callback = options;
-//     options = {};
-//   }
-//   if (hostname === 'api.telegram.org') {
-//     console.log(`[DNS Hijack] Перенаправляем api.telegram.org -> 149.154.167.220`);
-//     return callback(null, [{ address: '149.154.167.220', family: 4 }], 4);
-//   }
-//   return originalLookup(hostname, options, callback);
-// };
+const originalLookup = dns.lookup;
+dns.lookup = (hostname, options, callback) => {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  if (hostname === 'api.telegram.org') {
+    // Force to a known stable Telegram IP to bypass DNS issues/hijacking
+    return callback(null, [{ address: '149.154.167.220', family: 4 }], 4);
+  }
+  return originalLookup(hostname, options, callback);
+};
 
 // DNS settings - only use if specified, otherwise rely on environment
 if (process.env.USE_GOOGLE_DNS === 'true') {
@@ -359,8 +359,8 @@ async function initializeBot() {
       try {
         console.log(`🔍 Handshake start (timeout 60s, family 4)...`);
         response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
-          family: 4, // Use direct family setting as in the successful test script
-          timeout: 60000 
+          family: 4, 
+          timeout: 90000 // 90 sec
         });
       } catch (axiosErr) {
         throw new Error(`handshake failed: ${axiosErr.message}`);
