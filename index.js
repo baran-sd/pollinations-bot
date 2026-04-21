@@ -240,8 +240,11 @@ dns.lookup = (hostname, options, callback) => {
     options = {};
   }
   if (hostname === 'api.telegram.org') {
-    // Force to a known stable Telegram IP to bypass DNS issues/hijacking
-    return callback(null, [{ address: '149.154.167.220', family: 4 }], 4);
+    const address = '149.154.167.220';
+    if (options.all) {
+      return callback(null, [{ address, family: 4 }]);
+    }
+    return callback(null, address, 4);
   }
   return originalLookup(hostname, options, callback);
 };
