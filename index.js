@@ -256,7 +256,6 @@ async function initializeBot() {
   }
 
   const setupMirrors = [
-  const setupMirrors = [
     process.env.CUSTOM_TG_MIRROR,
     "https://api.telegram.org.dog",
     "https://telegg.xyz",
@@ -272,6 +271,8 @@ async function initializeBot() {
   console.log("📡 Попытка автоматической настройки Webhook и поиска рабочего зеркала...");
   let activeMirror = null;
 
+  for (const mirror of setupMirrors) {
+    try {
       if (!mirror && mirror !== null) continue; // Skip undefined/empty CUSTOM_TG_MIRROR
 
       const mirrorName = mirror || "Прямое соединение";
