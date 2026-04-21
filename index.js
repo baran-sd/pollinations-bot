@@ -256,7 +256,8 @@ async function initializeBot() {
   }
 
   const setupMirrors = [
-    process.env.CUSTOM_TG_MIRROR, // Optional user mirror
+  const setupMirrors = [
+    process.env.CUSTOM_TG_MIRROR,
     "https://api.telegram.org.dog",
     "https://telegg.xyz",
     "https://tproxy.xyz",
@@ -265,28 +266,33 @@ async function initializeBot() {
     "https://api.telegram-proxy.com",
     "https://api.extraton.io",
     "https://tgproxy.org",
-    null // Direct as last resort
-  ].filter(Boolean);
+    null // Direct
+  ];
 
   console.log("📡 Попытка автоматической настройки Webhook и поиска рабочего зеркала...");
   let activeMirror = null;
 
-  for (const mirror of setupMirrors) {
-    try {
+      if (!mirror && mirror !== null) continue; // Skip undefined/empty CUSTOM_TG_MIRROR
+
       const mirrorName = mirror || "Прямое соединение";
       console.log(`🔄 Пробуем зеркало: ${mirrorName}...`);
       
       await performHandshake(token, mirror);
       console.log(`✅ Зеркало ${mirrorName} работает на выход!`);
       
+      activeMirror = mirror;
+
       if (webhookUrl) {
-          await setBotWebhook(token, webhookUrl, mirror);
-          console.log(`✅ Webhook установлен через ${mirrorName}.`);
+          try {
+            await setBotWebhook(token, webhookUrl, mirror);
+            console.log(`✅ Webhook установлен через ${mirrorName}.`);
+          } catch (whErr) {
+            console.warn(`⚠️ Не удалось установить Webhook через ${mirrorName}: ${whErr.message}`);
+          }
           const manualBase = mirror || "https://api.telegram.org";
           manualWebhookUrl = `${manualBase}/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
       }
       
-      activeMirror = mirror;
       break;
     } catch (e) {
       console.warn(`⚠️ Зеркало ${mirror || "Direct"} недоступно: ${e.message}`);
