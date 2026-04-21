@@ -257,10 +257,15 @@ async function initializeBot() {
 
   const setupMirrors = [
     process.env.CUSTOM_TG_MIRROR, // Optional user mirror
-    null, // Direct
+    "https://api.telegram.org.dog",
+    "https://telegg.xyz",
+    "https://tproxy.xyz",
+    "https://tg.i-c-a.su",
+    "https://api.v-prox.com",
     "https://api.telegram-proxy.com",
     "https://api.extraton.io",
-    "https://tgproxy.org"
+    "https://tgproxy.org",
+    null // Direct as last resort
   ].filter(Boolean);
 
   console.log("📡 Попытка автоматической настройки Webhook и поиска рабочего зеркала...");
