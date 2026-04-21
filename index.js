@@ -21,15 +21,16 @@ async function startAxiosPolling(bot, token, baseConfig = {}) {
   console.log("🚀 Custom Axios Polling Started...");
 
   // Use the connection options that succeeded in the handshake
+  const config = baseConfig.config || {};
   const pollingOptions = {
-    ...baseConfig,
+    ...config,
     params: {
       offset: lastUpdateId + 1,
       timeout: 30, // Long polling
       allowed_updates: ["message", "callback_query"]
     },
     // Polling timeout should be slightly longer than Telegram's response timeout (30s)
-    timeout: (baseConfig.timeout || 45000) > 35000 ? baseConfig.timeout || 45000 : 45000 
+    timeout: (config.timeout || 45000) > 35000 ? config.timeout || 45000 : 45000 
   };
 
   while (isPolling) {
@@ -402,7 +403,7 @@ async function initializeBot() {
       setupBotHandlers(); // Установка обработчиков сообщений
       
       // Start our custom high-resilience polling with the winning strategy settings
-      startAxiosPolling(bot, token, winner.config);
+      startAxiosPolling(bot, token, winner);
       
       return; 
 
