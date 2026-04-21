@@ -353,10 +353,26 @@ async function initializeBot() {
         });
       }
 
-      const user = await bot.getMe();
+      // Verify bot token and get info via Axios instead of the library's getMe
+      // This bypasses the TLS issues in the library's internal client
+      let response;
+      try {
+        response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
+          httpsAgent: new (require('https')).Agent({ keepAlive: true, family: 4 }),
+          timeout: 10000
+        });
+      } catch (axiosErr) {
+        throw new Error(`handshake failed: ${axiosErr.message}`);
+      }
+
+      if (!response.data || !response.data.ok) {
+        throw new Error(`handshake failed: ${response.data?.description || 'unknown error'}`);
+      }
+
+      const user = response.data.result;
       botUserName = user.username;
       botError = null;
-      console.log(`✅ Бот @${botUserName} успешно авторизован.`);
+      console.log(`✅ Бот @${botUserName} успешно авторизован (Handshake OK).`);
       
       setupBotHandlers(); // Установка обработчиков сообщений
       
