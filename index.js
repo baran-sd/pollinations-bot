@@ -15,30 +15,24 @@ let airtablePromptsCache = [];
 let lastUpdateId = 0;
 let isPolling = false;
 
-async function startAxiosPolling(bot, token, baseConfig = {}) {
+async function startAxiosPolling(bot, token) {
   if (isPolling) return;
   isPolling = true;
-  console.log("🚀 Custom Axios Polling Started...");
+  console.log("🚀 Custom Axios Polling Started (IPv4 Mode)...");
 
-  // Use the connection options that succeeded in the handshake
-  const config = baseConfig.config || {};
   const pollingOptions = {
-    ...config,
     params: {
       offset: lastUpdateId + 1,
       timeout: 30, // Long polling
       allowed_updates: ["message", "callback_query"]
     },
-    // Polling timeout should be slightly longer than Telegram's response timeout (30s)
-    timeout: (config.timeout || 45000) > 35000 ? config.timeout || 45000 : 45000 
+    family: 4,
+    timeout: 60000 
   };
 
   while (isPolling) {
     try {
-      let requestUrl = `https://api.telegram.org/bot${token}/getUpdates`;
-      if (baseConfig && baseConfig.isDirect) requestUrl = `https://149.154.167.220/bot${token}/getUpdates`;
-      if (baseConfig && baseConfig.isMirror) requestUrl = `${baseConfig.baseUrl}/bot${token}/getUpdates`;
-        
+      const requestUrl = `https://api.telegram.org/bot${token}/getUpdates`;
       const response = await axios.get(requestUrl, pollingOptions);
       
       if (response.data && response.data.ok) {
@@ -51,10 +45,10 @@ async function startAxiosPolling(bot, token, baseConfig = {}) {
     } catch (err) {
       if (err.code !== 'ECONNABORTED' && !err.message.includes('timeout')) {
         console.error(`[Axios Polling Error] ${err.message}`);
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 10000));
       }
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 200));
   }
 }
 
@@ -237,57 +231,14 @@ function saveSavedPrompts(prompts) {
 }
 
 
-// Competitive DNS/Connection Probe
-async function competitiveHandshake(token) {
+// Simplified Handshake
+async function performHandshake(token) {
   const url = `https://api.telegram.org/bot${token}/getMe`;
-  
-  const strategies = [
-    { name: "Standard", config: { timeout: 45000 } },
-    { name: "IPv4 Forced", config: { timeout: 45000, family: 4 } },
-    { name: "Browser UA", config: { 
-        timeout: 45000, 
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' } 
-    } },
-    { name: "Direct IP Bypass", config: { 
-        timeout: 45000, 
-        httpsAgent: new (require('https')).Agent({ servername: 'api.telegram.org' }),
-        headers: { 'Host': 'api.telegram.org' }
-    }, isDirect: true },
-    { name: "Mirror: TGProxy.org", config: { timeout: 45000 }, isMirror: true, baseUrl: "https://tgproxy.org" },
-    { name: "Mirror: Telegram-Proxy.com", config: { timeout: 45000 }, isMirror: true, baseUrl: "https://api.telegram-proxy.com" }
-  ];
-
-  console.log(`📡 Starting competitive handshake (timeout: 45s, strategies: ${strategies.length})...`);
-
-  const promises = strategies.map(s => {
-    let requestUrl = url;
-    if (s.isDirect) requestUrl = `https://149.154.167.220/bot${token}/getMe`;
-    if (s.isMirror) requestUrl = `${s.baseUrl}/bot${token}/getMe`;
-
-    return axios.get(requestUrl, s.config)
-      .then(res => {
-        console.log(`✅ Strategy "${s.name}" succeeded!`);
-        return { 
-          strategy: s.name, 
-          response: res, 
-          config: s.config, 
-          isDirect: s.isDirect,
-          isMirror: s.isMirror,
-          baseUrl: s.baseUrl 
-        };
-      })
-      .catch(err => {
-        console.log(`❌ Strategy "${s.name}" failed: ${err.message}`);
-        throw err;
-      });
+  console.log(`🔍 Handshake start (timeout 60s, family 4)...`);
+  return axios.get(url, { 
+    timeout: 60000,
+    family: 4 
   });
-
-  try {
-    // Wait for the first successful strategy
-    return await Promise.any(promises);
-  } catch (err) {
-    throw new Error("All connection strategies failed.");
-  }
 }
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -387,23 +338,15 @@ async function initializeBot() {
         });
       }
 
-      // Verify bot token via competitive handshake
-      let winner;
-      try {
-        winner = await competitiveHandshake(token);
-      } catch (err) {
-        throw new Error(`All handshake attempts failed: ${err.message}`);
-      }
-
-      const user = winner.response.data.result;
+      // Verify bot token
+      const response = await performHandshake(token);
+      const user = response.data.result;
       botUserName = user.username;
       botError = null;
-      console.log(`✅ Бот @${botUserName} успешно авторизован (Handshake OK). Сценарий: ${winner.strategy}`);
+      console.log(`✅ Бот @${botUserName} успешно авторизован.`);
       
-      setupBotHandlers(); // Установка обработчиков сообщений
-      
-      // Start our custom high-resilience polling with the winning strategy settings
-      startAxiosPolling(bot, token, winner);
+      setupBotHandlers(); 
+      startAxiosPolling(bot, token);
       
       return; 
 
