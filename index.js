@@ -28,8 +28,7 @@ async function startAxiosPolling(bot, token) {
           timeout: 30, // Long polling
           allowed_updates: ["message", "callback_query"]
         },
-        timeout: 40000, // Slightly longer than TG timeout
-        family: 4 // Use direct family setting
+        timeout: 40000 // Slightly longer than TG timeout
       });
 
       if (response.data && response.data.ok) {
@@ -232,22 +231,9 @@ function saveSavedPrompts(prompts) {
 }
 
 
-// БЛОК ОБХОДА DNS БЛОКИРОВКИ ДЛЯ API.TELEGRAM.ORG
-const originalLookup = dns.lookup;
-dns.lookup = (hostname, options, callback) => {
-  if (typeof options === 'function') {
-    callback = options;
-    options = {};
-  }
-  if (hostname === 'api.telegram.org') {
-    const address = '149.154.167.220';
-    if (options.all) {
-      return callback(null, [{ address, family: 4 }]);
-    }
-    return callback(null, address, 4);
-  }
-  return originalLookup(hostname, options, callback);
-};
+// БЛОК ОБХОДА DNS БЛОКИРОВКИ (ОТКЛЮЧЕНО, ТАК КАК AIRTABLE РАБОТАЕТ)
+// const originalLookup = dns.lookup;
+// ...
 
 // DNS settings - only use if specified, otherwise rely on environment
 if (process.env.USE_GOOGLE_DNS === 'true') {
@@ -360,10 +346,9 @@ async function initializeBot() {
       // This bypasses the TLS issues in the library's internal client
       let response;
       try {
-        console.log(`🔍 Handshake start (timeout 60s, family 4)...`);
+        console.log(`🔍 Handshake start (timeout 60s)...`);
         response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
-          family: 4, 
-          timeout: 90000 // 90 sec
+          timeout: 60000 
         });
       } catch (axiosErr) {
         throw new Error(`handshake failed: ${axiosErr.message}`);
