@@ -13,44 +13,9 @@ console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
 let airtablePromptsCache = [];
 let lastUpdateId = 0;
-let isPolling = false;
+// No longer using custom polling
 
-async function startAxiosPolling(bot, token) {
-  if (isPolling) return;
-  isPolling = true;
-  console.log("🚀 Custom Axios Polling Started (IPv4 Mode)...");
-
-  const pollingOptions = {
-    params: {
-      offset: lastUpdateId + 1,
-      timeout: 30, // Long polling
-      allowed_updates: ["message", "callback_query"]
-    },
-    family: 4,
-    timeout: 60000 
-  };
-
-  while (isPolling) {
-    try {
-      const requestUrl = `https://api.telegram.org/bot${token}/getUpdates`;
-      const response = await axios.get(requestUrl, pollingOptions);
-      
-      if (response.data && response.data.ok) {
-        const updates = response.data.result;
-        for (const update of updates) {
-          lastUpdateId = Math.max(lastUpdateId, update.update_id);
-          bot.processUpdate(update);
-        }
-      }
-    } catch (err) {
-      if (err.code !== 'ECONNABORTED' && !err.message.includes('timeout')) {
-        console.error(`[Axios Polling Error] ${err.message}`);
-        await new Promise(r => setTimeout(r, 10000));
-      }
-    }
-    await new Promise(r => setTimeout(r, 200));
-  }
-}
+// Polling removed in favor of Webhooks
 
 
 
@@ -266,104 +231,56 @@ async function initializeBot() {
 
   process.env.NTBA_FIX_350 = 1;
   
-  // 1. Ждем немного для стабилизации сети в Docker
-  networkStatus = "Стабилизация сети (2 сек)...";
-  await new Promise(r => setTimeout(r, 2000));
+  // 1. Стабилизация сети
+  networkStatus = "Инициализация Webhook...";
+  await new Promise(r => setTimeout(r, 1000));
 
-  // 2. Проверка 1: DNS Google (8.8.8.8)
-  try {
-    networkChecks.dns = "Проверка...";
-    await axios.get('https://8.8.8.8', { timeout: 3000, validateStatus: false });
-    networkChecks.dns = "✅ Доступно";
-  } catch (e) {
-    networkChecks.dns = `❌ ${e.message}`;
+  // Определение URL для Webhook
+  // Формат SPACE_ID обычно "user/space-name"
+  const spaceId = process.env.SPACE_ID; 
+  let webhookUrl = "";
+
+  if (spaceId) {
+    const [user, space] = spaceId.split('/');
+    // HF URL pattern: https://user-space.hf.space
+    webhookUrl = `https://${user.toLowerCase().replace(/\./g, '-')}-${space.toLowerCase().replace(/\./g, '-')}.hf.space/webhook/${token}`;
+  } else {
+    console.warn("⚠️ SPACE_ID не найден. Webhook может не работать, если не задан внешний URL.");
   }
 
-  // 3. Проверка 2: Прямой IP (1.1.1.1)
   try {
-    networkChecks.ip_1_1_1_1 = "Проверка...";
-    await axios.get('https://1.1.1.1', { timeout: 3000, validateStatus: false });
-    networkChecks.ip_1_1_1_1 = "✅ Доступно";
-  } catch (e) {
-    networkChecks.ip_1_1_1_1 = `❌ ${e.message}`;
-  }
+    if (!bot) {
+      bot = new TelegramBot(token, { polling: false });
+      
+      bot.on('error', (error) => {
+        console.error(`[Bot Error] ${error.message}`);
+      });
+    }
 
-  // 4. Проверка 3: Telegram IP (149.154.167.220)
-  try {
-    networkChecks.tg_ip = "Проверка...";
-    await axios.get('https://149.154.167.220', { timeout: 3000, validateStatus: false });
-    networkChecks.tg_ip = "✅ Доступно (SSL Error expected but route OK)";
-  } catch (e) {
-    if (e.code === 'ECONNREFUSED' || e.code === 'ETIMEDOUT') {
-        networkChecks.tg_ip = `❌ ${e.message}`;
+    // Проверка бота через прямой запрос (Direct IP или стандарт)
+    console.log("🔍 Проверка токена...");
+    const response = await performHandshake(token);
+    const user = response.data.result;
+    botUserName = user.username;
+    botError = null;
+    console.log(`✅ Бот @${botUserName} успешно авторизован.`);
+
+    setupBotHandlers(); 
+
+    if (webhookUrl) {
+      console.log(`📡 Установка Webhook: ${webhookUrl}`);
+      await bot.setWebHook(webhookUrl);
+      console.log("✅ Webhook установлен успешно.");
+      networkStatus = "Webhook: Active";
     } else {
-        networkChecks.tg_ip = `✅ Доступно (${e.code || 'TLS/SSL Error - Route OK'})`;
+      botError = "Не удалось определить адрес Space для Webhook. Проверьте SPACE_ID.";
     }
-  }
 
-  // 5. Проверка 4: Google.com (DNS Check)
-  try {
-    networkChecks.google = "Проверка...";
-    await axios.get('https://www.google.com', { timeout: 3000 });
-    networkChecks.google = "✅ Доступно (DNS работает)";
-    networkStatus = "Сеть: Доступна (DNS OK)";
-  } catch (e) {
-    networkChecks.google = `❌ ${e.message}`;
-    networkStatus = "Сеть: Проблемы с DNS или блокировка";
-  }
-
-  let attempts = 0;
-  const maxAttempts = 5;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    const timestamp = new Date().toLocaleTimeString();
-    try {
-      console.log(`[${timestamp}] Попытка подключения #${attempts}...`);
-      
-      if (!bot) {
-        bot = new TelegramBot(token, { 
-          polling: false, // Disable native polling completely
-          request: {
-            agentOptions: {
-              keepAlive: true,
-              family: 4
-            }
-          }
-        });
-
-        // We can still keep the error handler for other request errors
-        bot.on('error', (error) => {
-          console.error(`[Bot Error] ${error.message}`);
-        });
-      }
-
-      // Verify bot token
-      const response = await performHandshake(token);
-      const user = response.data.result;
-      botUserName = user.username;
-      botError = null;
-      console.log(`✅ Бот @${botUserName} успешно авторизован.`);
-      
-      setupBotHandlers(); 
-      startAxiosPolling(bot, token);
-      
-      return; 
-
-    } catch (err) {
-      const errorMsg = `${err.code || 'ERROR'}: ${err.message}`;
-      connectionHistory.push(`[${timestamp}] Попытка ${attempts}: ${errorMsg}`);
-      console.error(`❌ Попытка ${attempts} не удалась: ${errorMsg}`);
-      botError = `Ошибка подключения: ${errorMsg}`;
-
-      if (attempts < maxAttempts && (err.message.includes('ENOTFOUND') || err.message.includes('EFATAL') || err.message.includes('ETIMEDOUT'))) {
-        const waitTime = 10000;
-        networkStatus = `🔄 Ошибка сети. Повтор через ${waitTime/1000}с...`;
-        await new Promise(r => setTimeout(r, waitTime));
-      } else {
-        break;
-      }
-    }
+  } catch (err) {
+    const errorMsg = `${err.code || 'ERROR'}: ${err.message}`;
+    console.error(`❌ Ошибка инициализации: ${errorMsg}`);
+    botError = `Ошибка инициализации: ${errorMsg}`;
+    networkStatus = "Webhook: Error";
   }
 }
 
@@ -1072,6 +989,16 @@ function setupBotHandlers() {
 
 
 const app = express();
+app.use(express.json()); // Essential for Webhooks
+
+// Webhook endpoint
+app.post(`/webhook/${token}`, (req, res) => {
+  if (bot) {
+    bot.processUpdate(req.body);
+  }
+  res.sendStatus(200);
+});
+
 app.get('/', (req, res) => {
   const historyHtml = connectionHistory.length > 0 
     ? `<h3>История попыток:</h3><ul>${connectionHistory.map(line => `<li>${line}</li>`).join('')}</ul>` 
