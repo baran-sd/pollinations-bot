@@ -34,7 +34,11 @@ async function startAxiosPolling(bot, token, baseConfig = {}) {
 
   while (isPolling) {
     try {
-      const response = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, pollingOptions);
+      const requestUrl = baseConfig && baseConfig.isDirect 
+        ? `https://149.154.167.220/bot${token}/getUpdates` 
+        : `https://api.telegram.org/bot${token}/getUpdates`;
+        
+      const response = await axios.get(requestUrl, pollingOptions);
       
       if (response.data && response.data.ok) {
         const updates = response.data.result;
@@ -237,32 +241,33 @@ async function competitiveHandshake(token) {
   const url = `https://api.telegram.org/bot${token}/getMe`;
   
   const strategies = [
-    { name: "Standard", config: { timeout: 15000 } },
-    { name: "IPv4 Forced", config: { timeout: 15000, family: 4 } },
+    { name: "Standard", config: { timeout: 45000 } },
+    { name: "IPv4 Forced", config: { timeout: 45000, family: 4 } },
     { name: "Browser UA", config: { 
-        timeout: 15000, 
+        timeout: 45000, 
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' } 
     } },
-    { name: "IPv4 + Browser UA", config: { 
-        timeout: 15000, 
-        family: 4,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' } 
-    } }
+    { name: "Direct IP Bypass", config: { 
+        timeout: 45000, 
+        httpsAgent: new (require('https')).Agent({ servername: 'api.telegram.org' }),
+        headers: { 'Host': 'api.telegram.org' }
+    }, isDirect: true }
   ];
 
-  console.log(`📡 Starting competitive handshake (tried ${strategies.length} strategies)...`);
+  console.log(`📡 Starting competitive handshake (timeout: 45s, strategies: ${strategies.length})...`);
 
-  const promises = strategies.map(s => 
-    axios.get(url, s.config)
+  const promises = strategies.map(s => {
+    const requestUrl = s.isDirect ? `https://149.154.167.220/bot${token}/getMe` : url;
+    return axios.get(requestUrl, s.config)
       .then(res => {
         console.log(`✅ Strategy "${s.name}" succeeded!`);
-        return { strategy: s.name, response: res, config: s.config };
+        return { strategy: s.name, response: res, config: s.config, isDirect: s.isDirect };
       })
       .catch(err => {
         console.log(`❌ Strategy "${s.name}" failed: ${err.message}`);
         throw err;
-      })
-  );
+      });
+  });
 
   try {
     // Wait for the first successful strategy
