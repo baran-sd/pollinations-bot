@@ -13,15 +13,25 @@ console.log(`📁 Prompts file path: ${PROMPTS_FILE}`);
 
 let airtablePromptsCache = [];
 
-async function syncAirtable() {
-  const token = process.env.AIRTABLE_PERSONAL_ACCESS_TOKEN;
-  const baseId = process.env.AIRTABLE_BASE_ID;
-  const tableName = process.env.AIRTABLE_TABLE_NAME || 'Prompts';
-  if (!token || !baseId) return;
 
+
+async function syncAirtable() {
+  let token_key = process.env.AIRTABLE_PERSONAL_ACCESS_TOKEN;
+  let baseId = (process.env.AIRTABLE_BASE_ID || '').trim();
+  let tableName = (process.env.AIRTABLE_TABLE_NAME || 'Prompts').trim();
+  
+  // Clean URL if user pasted the entire URL instead of the ID
+  if (baseId.includes('airtable.com')) {
+    const match = baseId.match(/(app[a-zA-Z0-9]+)/);
+    if (match) baseId = match[1];
+  }
+
+  if (!token_key || !baseId) return;
+
+  const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`;
+  
   try {
-    const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`;
-    const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    const response = await axios.get(url, { headers: { 'Authorization': `Bearer ${token_key}` } });
     
     if (response.data && response.data.records) {
       airtablePromptsCache = response.data.records.map(r => ({
@@ -32,7 +42,12 @@ async function syncAirtable() {
       console.log(`✅ Airtable synced: ${airtablePromptsCache.length} prompts loaded.`);
     }
   } catch (err) {
-    console.error('❌ Airtable Sync Error:', err.message);
+    if (err.response) {
+      console.error(`❌ Airtable Sync Error: URL: https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`);
+      console.error(`❌ Airtable Response: ${err.response.status} - ${JSON.stringify(err.response.data)}`);
+    } else {
+      console.error('❌ Airtable Sync Error:', err.message);
+    }
   }
 }
 setInterval(syncAirtable, 5 * 60 * 1000);
