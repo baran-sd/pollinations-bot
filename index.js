@@ -196,14 +196,17 @@ function saveSavedPrompts(prompts) {
 }
 
 
-// Simplified Handshake
-async function performHandshake(token) {
-  const url = `https://api.telegram.org/bot${token}/getMe`;
-  console.log(`🔍 Handshake start (timeout 60s, family 4)...`);
-  return axios.get(url, { 
-    timeout: 60000,
-    family: 4 
-  });
+// Resilient Setup Functions
+async function performHandshake(token, mirror = null) {
+  const baseUrl = mirror || 'https://api.telegram.org';
+  const url = `${baseUrl}/bot${token}/getMe`;
+  return axios.get(url, { timeout: 15000, family: 4 });
+}
+
+async function setBotWebhook(token, webhookUrl, mirror = null) {
+  const baseUrl = mirror || 'https://api.telegram.org';
+  const url = `${baseUrl}/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
+  return axios.get(url, { timeout: 15000, family: 4 });
 }
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -222,65 +225,67 @@ let networkChecks = {
 };
 let connectionHistory = [];
 
+let manualWebhookUrl = "";
+
 async function initializeBot() {
   if (!token || !token.includes(':')) {
-    botError = "Недействительный токен Telegram-бота. Проверьте переменную TELEGRAM_BOT_TOKEN.";
-    console.error("ОШИБКА: " + botError);
+    botError = "Недействительный токен Telegram-бота.";
     return;
   }
 
   process.env.NTBA_FIX_350 = 1;
-  
-  // 1. Стабилизация сети
-  networkStatus = "Инициализация Webhook...";
-  await new Promise(r => setTimeout(r, 1000));
+  networkStatus = "Настройка Webhook...";
 
-  // Определение URL для Webhook
-  // Формат SPACE_ID обычно "user/space-name"
   const spaceId = process.env.SPACE_ID; 
   let webhookUrl = "";
 
   if (spaceId) {
     const [user, space] = spaceId.split('/');
-    // HF URL pattern: https://user-space.hf.space
     webhookUrl = `https://${user.toLowerCase().replace(/\./g, '-')}-${space.toLowerCase().replace(/\./g, '-')}.hf.space/webhook/${token}`;
-  } else {
-    console.warn("⚠️ SPACE_ID не найден. Webhook может не работать, если не задан внешний URL.");
+    manualWebhookUrl = `https://api.telegram.org/bot${token}/setWebHook?url=${webhookUrl}`;
   }
 
-  try {
-    if (!bot) {
-      bot = new TelegramBot(token, { polling: false });
-      
-      bot.on('error', (error) => {
-        console.error(`[Bot Error] ${error.message}`);
-      });
-    }
+  if (!bot) {
+    bot = new TelegramBot(token, { polling: false });
+    setupBotHandlers();
+  }
 
-    // Проверка бота через прямой запрос (Direct IP или стандарт)
-    console.log("🔍 Проверка токена...");
-    const response = await performHandshake(token);
-    const user = response.data.result;
-    botUserName = user.username;
+  const setupMirrors = [
+    null, // Direct
+    "https://api.extraton.io",
+    "https://tgproxy.org",
+    "https://api.telegram-proxy.com"
+  ];
+
+  console.log("📡 Попытка автоматической настройки Webhook...");
+  let success = false;
+
+  for (const mirror of setupMirrors) {
+    try {
+      const mirrorName = mirror || "Прямое соединение";
+      console.log(`🔄 Пробуем через: ${mirrorName}...`);
+      await setBotWebhook(token, webhookUrl, mirror);
+      console.log(`✅ Webhook успешно установлен через ${mirrorName}!`);
+      success = true;
+      break;
+    } catch (e) {
+      console.warn(`⚠️ Ошибка через ${mirror || "Direct"}: ${e.message}`);
+    }
+  }
+
+  if (success) {
+    networkStatus = "Webhook: Active";
     botError = null;
-    console.log(`✅ Бот @${botUserName} успешно авторизован.`);
-
-    setupBotHandlers(); 
-
-    if (webhookUrl) {
-      console.log(`📡 Установка Webhook: ${webhookUrl}`);
-      await bot.setWebHook(webhookUrl);
-      console.log("✅ Webhook установлен успешно.");
-      networkStatus = "Webhook: Active";
-    } else {
-      botError = "Не удалось определить адрес Space для Webhook. Проверьте SPACE_ID.";
-    }
-
-  } catch (err) {
-    const errorMsg = `${err.code || 'ERROR'}: ${err.message}`;
-    console.error(`❌ Ошибка инициализации: ${errorMsg}`);
-    botError = `Ошибка инициализации: ${errorMsg}`;
-    networkStatus = "Webhook: Error";
+    // Try to get username one last time (not critical)
+    try {
+      const resp = await performHandshake(token);
+      botUserName = resp.data.result.username;
+    } catch(e) {}
+  } else {
+    networkStatus = "Webhook: Требуется ручная настройка";
+    botError = "Исходящие запросы заблокированы. Используйте кнопку 'Настроить Webhook' на панели.";
+    console.error("❌ Не удалось настроить Webhook автоматически.");
+    console.log(`👉 Кликните здесь для ручной настройки: ${manualWebhookUrl}`);
   }
 }
 
