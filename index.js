@@ -6,6 +6,18 @@ const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
 
+// Global State
+let bot;
+let botUserName = "Bot";
+let botError = null;
+let networkStatus = "Инициализация...";
+let manualWebhookUrl = "";
+let connectionHistory = [];
+let networkChecks = { dns: '...', ip_1_1_1_1: '...', tg_ip: '...', google: '...' };
+
+const token = process.env.TELEGRAM_BOT_TOKEN;
+const pollinationsKey = process.env.POLLINATIONS_API_KEY;
+
 // Use /data for HuggingFace persistent storage, fallback to local
 const HF_DATA_DIR = '/data';
 const PROMPTS_FILE = (fs.existsSync(HF_DATA_DIR) ? path.join(HF_DATA_DIR, 'prompts.json') : path.join(__dirname, 'prompts.json'));
@@ -196,36 +208,29 @@ function saveSavedPrompts(prompts) {
 }
 
 
+// Network Diagnostics logic
+async function runDiagnostics() {
+  dns.lookup('google.com', (err, addr) => { networkChecks.google = err ? `Err: ${err.code}` : 'OK'; });
+  dns.lookup('one.one.one.one', (err, addr) => { networkChecks.dns = err ? `Err: ${err.code}` : 'OK'; });
+  
+  axios.get('https://1.1.1.1', { timeout: 5000 }).then(() => networkChecks.ip_1_1_1_1 = 'OK').catch(e => networkChecks.ip_1_1_1_1 = 'Blocked');
+  axios.get('https://149.154.167.220', { timeout: 5000 }).then(() => networkChecks.tg_ip = 'OK').catch(e => networkChecks.tg_ip = 'Blocked (TG IP)');
+}
+
 // Resilient Setup Functions
 async function performHandshake(token, mirror = null) {
-  const baseUrl = mirror || 'https://api.telegram.org';
+  const baseUrl = (mirror || 'https://api.telegram.org').replace(/\/$/, '');
   const url = `${baseUrl}/bot${token}/getMe`;
-  return axios.get(url, { timeout: 15000, family: 4 });
+  console.log(`🔍 Handshake with: ${url}`);
+  return axios.get(url, { timeout: 10000 });
 }
 
 async function setBotWebhook(token, webhookUrl, mirror = null) {
-  const baseUrl = mirror || 'https://api.telegram.org';
+  const baseUrl = (mirror || 'https://api.telegram.org').replace(/\/$/, '');
   const url = `${baseUrl}/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
-  return axios.get(url, { timeout: 15000, family: 4 });
+  console.log(`🔍 Setting Webhook: ${url}`);
+  return axios.get(url, { timeout: 10000 });
 }
-
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const pollinationsKey = process.env.POLLINATIONS_API_KEY;
-const systemEnhancePrompt = process.env.SYSTEM_ENHANCE_PROMPT || `Rewrite the following user request into a highly creative prompt for an AI image generator. Add artistic styles, lighting, and camera angles. Keep it concise, MAXIMUM 30 words! Make it in English language only. Output ONLY the raw prompt, no extra text, explanations, or quotes. The user request is: `;
-
-let botError = null;
-let bot = null;
-let botUserName = 'Unknown';
-let networkStatus = 'Инициализация...';
-let networkChecks = {
-  dns: 'Ожидание...',
-  ip_1_1_1_1: 'Ожидание...',
-  tg_ip: 'Ожидание...',
-  google: 'Ожидание...'
-};
-let connectionHistory = [];
-
-let manualWebhookUrl = "";
 
 async function initializeBot() {
   if (!token || !token.includes(':')) {
@@ -233,59 +238,84 @@ async function initializeBot() {
     return;
   }
 
+  runDiagnostics();
   process.env.NTBA_FIX_350 = 1;
   networkStatus = "Настройка Webhook...";
 
-  const spaceId = process.env.SPACE_ID; 
+  const spaceId = process.env.SPACE_ID || process.env.SPACE_REPO_NAME; 
   let webhookUrl = "";
 
   if (spaceId) {
-    const [user, space] = spaceId.split('/');
-    webhookUrl = `https://${user.toLowerCase().replace(/\./g, '-')}-${space.toLowerCase().replace(/\./g, '-')}.hf.space/webhook/${token}`;
-    manualWebhookUrl = `https://api.telegram.org/bot${token}/setWebHook?url=${webhookUrl}`;
-  }
-
-  if (!bot) {
-    bot = new TelegramBot(token, { polling: false });
-    setupBotHandlers();
+    const parts = spaceId.split('/');
+    const user = parts[0].toLowerCase().replace(/[\._]/g, '-');
+    const space = parts[parts.length - 1].toLowerCase().replace(/[\._]/g, '-');
+    webhookUrl = `https://${user}-${space}.hf.space/webhook/${token}`;
+  } else {
+    const host = process.env.HOSTNAME || 'localhost';
+    webhookUrl = (host.includes('hf.space')) ? `https://${host}/webhook/${token}` : "";
   }
 
   const setupMirrors = [
+    process.env.CUSTOM_TG_MIRROR, // Optional user mirror
     null, // Direct
+    "https://api.telegram-proxy.com",
     "https://api.extraton.io",
-    "https://tgproxy.org",
-    "https://api.telegram-proxy.com"
-  ];
+    "https://tgproxy.org"
+  ].filter(Boolean);
 
-  console.log("📡 Попытка автоматической настройки Webhook...");
-  let success = false;
+  console.log("📡 Попытка автоматической настройки Webhook и поиска рабочего зеркала...");
+  let activeMirror = null;
 
   for (const mirror of setupMirrors) {
     try {
       const mirrorName = mirror || "Прямое соединение";
-      console.log(`🔄 Пробуем через: ${mirrorName}...`);
-      await setBotWebhook(token, webhookUrl, mirror);
-      console.log(`✅ Webhook успешно установлен через ${mirrorName}!`);
-      success = true;
+      console.log(`🔄 Пробуем зеркало: ${mirrorName}...`);
+      
+      await performHandshake(token, mirror);
+      console.log(`✅ Зеркало ${mirrorName} работает на выход!`);
+      
+      if (webhookUrl) {
+          await setBotWebhook(token, webhookUrl, mirror);
+          console.log(`✅ Webhook установлен через ${mirrorName}.`);
+          const manualBase = mirror || "https://api.telegram.org";
+          manualWebhookUrl = `${manualBase}/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
+      }
+      
+      activeMirror = mirror;
       break;
     } catch (e) {
-      console.warn(`⚠️ Ошибка через ${mirror || "Direct"}: ${e.message}`);
+      console.warn(`⚠️ Зеркало ${mirror || "Direct"} недоступно: ${e.message}`);
+      connectionHistory.push(`[${new Date().toLocaleTimeString()}] ${mirror || 'Direct'}: ${e.message}`);
     }
   }
 
-  if (success) {
-    networkStatus = "Webhook: Active";
+  if (!manualWebhookUrl && webhookUrl) {
+      const bestMirror = setupMirrors.find(m => m !== null) || "https://api.telegram.org";
+      manualWebhookUrl = `${bestMirror}/bot${token}/setWebHook?url=${encodeURIComponent(webhookUrl)}`;
+  }
+
+  // Initialize bot with working mirror
+  if (!bot || (activeMirror && bot.options.baseApiUrl !== activeMirror)) {
+    console.log(`🤖 Инициализация бота с базовым URL: ${activeMirror || 'Default'}`);
+    bot = new TelegramBot(token, { 
+        polling: false,
+        baseApiUrl: activeMirror || undefined
+    });
+    // Reset handlers flag so they attach to new instance
+    setupBotHandlers.done = false;
+    setupBotHandlers();
+  }
+
+  if (activeMirror !== null || !webhookUrl) {
+    networkStatus = `Webhook: Active | Mirror: ${activeMirror || 'Direct'}`;
     botError = null;
-    // Try to get username one last time (not critical)
     try {
-      const resp = await performHandshake(token);
+      const resp = await performHandshake(token, activeMirror);
       botUserName = resp.data.result.username;
     } catch(e) {}
   } else {
     networkStatus = "Webhook: Требуется ручная настройка";
-    botError = "Исходящие запросы заблокированы. Используйте кнопку 'Настроить Webhook' на панели.";
-    console.error("❌ Не удалось настроить Webhook автоматически.");
-    console.log(`👉 Кликните здесь для ручной настройки: ${manualWebhookUrl}`);
+    botError = "Исходящие запросы заблокированы. Используйте кнопку 'Настроить Webhook' ниже.";
   }
 }
 
@@ -1004,6 +1034,11 @@ app.post(`/webhook/${token}`, (req, res) => {
   res.sendStatus(200);
 });
 
+// GET handler for convenience/testing
+app.get(`/webhook/${token}`, (req, res) => {
+  res.send(`✅ Webhook endpoint is alive and waiting for POST updates from Telegram.`);
+});
+
 app.get('/', (req, res) => {
   const historyHtml = connectionHistory.length > 0 
     ? `<h3>История попыток:</h3><ul>${connectionHistory.map(line => `<li>${line}</li>`).join('')}</ul>` 
@@ -1028,6 +1063,11 @@ app.get('/', (req, res) => {
             <strong>Текущая ошибка:</strong> ${botError}
         </div>
         ${diagHtml}
+        <div style="text-align: center; margin: 20px 0;">
+            <a href="${manualWebhookUrl}" target="_blank" style="background: #e67e22; color: white; padding: 12px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">⚙️ Настроить Webhook вручную</a>
+            <p style="font-size: 0.8em; color: #7f8c8d; margin-top: 10px;">(Откроется в новой вкладке. Если не нажимается — скопируйте ссылку ниже):</p>
+            <input type="text" value="${manualWebhookUrl}" readonly style="width: 100%; padding: 5px; font-size: 0.7em; background: #eee; border: 1px solid #ccc; border-radius: 3px;">
+        </div>
         ${historyHtml}
         <hr>
         <h3>🛠 Что делать?</h3>
